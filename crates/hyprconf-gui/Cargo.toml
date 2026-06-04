@@ -17,6 +17,7 @@ path = "src/main.rs"
 hyprconf-core.workspace = true
 
 iced.workspace = true
+directories.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true

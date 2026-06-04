@@ -14,8 +14,9 @@ hyprconf treats both on-disk formats as first-class citizens:
 The app can read either format, and you choose which one to write. A
 format-agnostic in-memory model is the core abstraction.
 
-> Status: **early scaffolding.** This is step 1 of 10 — a runnable window with
-> project conventions in place. No Hyprland parsing/editing logic yet.
+> Status: **work in progress.** The core reads and writes both formats
+> (round-trip preserving), and the GUI loads and lets you browse your real
+> config. Editing/saving from the UI and `hyprctl` integration are still to come.
 
 ## Workspace layout
 
@@ -39,11 +40,18 @@ logic testable in isolation.
 
 ```sh
 just            # list all recipes
-just run        # run the GUI
+just run        # run the GUI (auto-detects ~/.config/hypr/hyprland.{lua,conf})
 just test       # run the test suite
 just lint       # clippy with -D warnings
 just fmt        # format the workspace
 just ci         # fmt-check + lint + test (the full local gate)
+```
+
+The GUI accepts:
+
+```sh
+just run -- --config /path/to/hyprland.lua   # load a specific file
+just run -- --check                          # headless: load + print summary, no window
 ```
 
 Logging honours `RUST_LOG`, e.g. `RUST_LOG=debug just run`.

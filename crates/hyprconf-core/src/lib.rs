@@ -18,12 +18,14 @@
 //!   carrying provenance for comment-preserving round-trips.
 
 pub mod conf;
+pub mod lua;
 pub mod model;
 pub mod schema;
 pub mod structured;
 pub mod value;
 
 pub use conf::{ConfBundle, ConfDocument, ConfError, ConfParser, ConfSerializer, ConfWarning};
+pub use lua::{LuaBundle, LuaDocument, LuaError, LuaParser, LuaSerializer, LuaWarning};
 pub use model::{Config, ConfigFormat, Provenance, Span, Tracked};
 pub use schema::{
     CollectionId, CollectionSpec, EnumVariant, NumericRange, OptionSpec, Schema, Section, ValueType,
@@ -71,6 +73,10 @@ pub enum CoreError {
     /// An error while reading, parsing or following includes in a `.conf` file.
     #[error(transparent)]
     Conf(#[from] conf::ConfError),
+
+    /// An error while reading, parsing or following includes in a `.lua` file.
+    #[error(transparent)]
+    Lua(#[from] lua::LuaError),
 }
 
 /// A convenience [`Result`] alias whose error type is [`CoreError`].

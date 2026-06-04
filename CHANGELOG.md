@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-04
+
+### Added — the core wired into the GUI (`hyprconf-gui`)
+
+- **Non-blocking startup load.** On launch the GUI locates and parses the user's
+  config inside an `iced::Task` (off the UI thread), showing a **Loading** state
+  until it completes, then **Loaded** / **NotFound** / **Error** states.
+  - Detection: `hyprland.lua` then `hyprland.conf` under `$XDG_CONFIG_HOME/hypr`
+    (via the `directories` crate), falling back to `~/.config/hypr`.
+  - `--config <path>` (or `--config=<path>`) overrides detection; format is
+    inferred from the extension.
+  - Parsing goes through `hyprconf-core` (`LuaParser`/`ConfParser` + the
+    `bundle_to_config` mappers), following includes; out-of-schema keys are
+    counted as warnings, never dropped.
+- **Browse UI** (read-only this step):
+  - a scrollable **left sidebar** listing all schema **sections** plus a
+    **collections** group (Keybinds, Window Rules, Monitors, … with live counts);
+  - a **main pane** showing the selected section's options as `label: value`
+    (effective value from the file, or the schema default marked `(default)`),
+    or a one-line summary per item for collections;
+  - a **status bar** with detected format (Lua/conf), source path, included-file
+    count, options-set count and warning count.
+- **Live fuzzy search** (`fuzzy.rs`, dependency-free subsequence matcher with
+  prefix/contiguity bonuses and label > path > description weighting). A
+  non-empty query replaces the pane with ranked matches across all sections;
+  clicking a result jumps to its section.
+- **`--check`**: a headless flag that loads the config, prints a one-line
+  summary and exits (no window) — handy for scripting/CI smoke tests.
+
+### Tests
+
+- 8 GUI unit tests: `load_config` for explicit `.conf`/`.lua` (typed values),
+  missing-path error, extension→format mapping; and the fuzzy matcher
+  (subsequence, empty query, prefix/contiguity ranking, field weighting).
+- Verified end-to-end against a **real** `~/.config/hypr/hyprland.conf` via
+  `--check` (auto-detected through a symlink: 51 options set, 59 warnings for
+  keys outside the curated schema subset — preserved, not dropped) and via an
+  explicit `--config` override that followed 2 includes. The window was launched
+  briefly to confirm it renders without panicking.
+
+### Dependencies
+
+- `hyprconf-gui` now depends on `directories` (XDG config dir lookup).
+
+### Design notes
+
+- `iced::Task::perform` runs the synchronous load on the executor (not the UI
+  thread), satisfying "non-blocking with a visible loading state" without
+  pulling in a heavier async story; the message carries `Arc<LoadState>` so it
+  stays cheaply `Clone`.
+- The GUI stays a thin shell over the core: it owns no config knowledge beyond
+  the schema, reusing `conf::value_to_conf` for value display so on-screen
+  rendering matches what would be written back.
+
+## [0.4.0] - 2026-06-03
+
+### Added — the Lua format (`hyprconf-core::lua`)
+
+- **Reading strategy: lossless static parse** of the declarative subset via the
+  [`full_moon`] crate (concrete-syntax Lua parser). Chosen over sandboxed
+  evaluation because it is the right fit for an *editor*: comments, ordering and
+  formatting survive round-trips and untrusted config code is never executed.
+  - `LuaDocument` owns the parsed `Ast`; `to_text()` reproduces the source
+    byte-for-byte (full_moon is lossless).
+  - `lua::document_to_config` / `bundle_to_config` interpret the recognised
+    `hl.*` calls and top-level `require` into the format-agnostic `Config`.
+  - **Dynamic Lua is never flattened:** anything outside the declarative subset
+    (functions, loops, conditionals, `local x = require(...)`, method chains,
+    `hl.on`/`hl.timer`/`hl.define_submap` closures, ...) is left untouched in
+    the lossless document and reported as `LuaWarning::DynamicRegion` (read-only
+    / externally managed).
+  - The optional sandboxed `mlua` eval path is **not** implemented this step
+    (it is optional per spec; would sit behind a `lua-eval` feature).
+- **`LuaParser`**: `parse_str` (pure) and `parse_file` (follows
+  `require("mod")` → `<dir>/mod.lua`, detecting cycles and missing files as the
+  typed `LuaError`).
+- **`LuaSerializer`**: emits fresh idiomatic Lua against the `hl` API confirmed
+  in `meta/hl.meta.lua` — `hl.config({...})` (nested tables, dotted keys quoted),
+  `hl.bind`, `hl.window_rule`/`hl.layer_rule`/`hl.monitor`/`hl.workspace_rule`,
+  `hl.env`, `hl.exec_cmd`, `hl.animation`, `hl.curve`, and `$variables` as Lua
+  `local`s. Also re-serializes a parsed document losslessly. Plus `value_to_lua`.
+- **`CoreError::Lua`** wraps `LuaError` (`#[from]`, additive).
+
+### Tests
+
+- 6 new integration tests (`tests/lua_roundtrip.rs`) + fixtures
+  (`tests/fixtures/lua/*.lua`, `tests/fixtures/conf/roundtrip.conf`):
+  - **cross-format round-trip** `.conf → Config → .lua → parse → Config`,
+    asserting semantic equality over binds, window rules, monitors, decoration
+    options and animations;
+  - **Lua `Config → .lua → Config`** round-trip (the reverse direction);
+  - **lossless** byte-for-byte round-trip of Lua fixtures (comments/order);
+  - **dynamic Lua preserved verbatim and flagged read-only**;
+  - `require()` following across files; missing file as a typed error.
+- 7 new unit tests across the lua modules (AST→intermediate lowering, callee/
+  require extraction, escape round-trip, value/key rendering).
+
+### Dependencies
+
+- `hyprconf-core` now depends on `full_moon` (lossless Lua parser).
+
+### Confirmed against the official stub / flagged uncertainties
+
+- The `hl` API shape used for emission is taken from `meta/hl.meta.lua`
+  (Hyprland 0.55.2): `HL.API` fields `config`, `bind`, `window_rule`,
+  `layer_rule`, `monitor`, `workspace_rule`, `env`, `exec_cmd`, `animation`,
+  `curve`; `HL.BindOptions` (`repeating`/`locked`/`release`/`non_consuming`/
+  `transparent`/`ignore_mods`); `HL.MonitorSpec` (`output`/`mode`/`position`/
+  `scale`); `HL.WindowRuleSpec` (`name`/`match`).
+- **Could not verify** and chose round-trip-faithful encodings (hyprconf
+  conventions, clearly documented): bind dispatcher passed as a single
+  `"dispatcher args"` string (the stub types it `HL.Dispatcher|function`);
+  `mouse`/`submap` carried as bind opts (Hyprland uses `bindm` and
+  `define_submap` closures); window/layer `match` kept as a raw matcher string
+  (rather than the official `match` key→value table) to preserve arbitrary
+  matchers exactly; monitor trailing modifiers in an `extra` array; exec kind in
+  a `{ when = ... }` table. These are symmetric (read↔write) so the Config
+  round-trips; a later step can map them onto stricter `hl` shapes where safe.
+- The conf-only `submap` marker list does not survive to Lua (Lua models
+  submaps as closures); the per-bind `submap` association does. Tests compare
+  accordingly.
+
 ## [0.3.0] - 2026-06-03
 
 ### Added — the `.conf` (legacy hyprlang) format (`hyprconf-core::conf`)
@@ -173,7 +295,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/hyprconf/hyprconf/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/hyprconf/hyprconf/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hyprconf/hyprconf/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hyprconf/hyprconf/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hyprconf/hyprconf/releases/tag/v0.1.0

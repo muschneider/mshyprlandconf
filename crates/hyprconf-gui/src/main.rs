@@ -1,30 +1,42 @@
 //! `hyprconf-gui` — the Iced desktop front-end for hyprconf.
 //!
-//! This first step is intentionally tiny: it boots an Iced 0.14 application
-//! using the functional `iced::application(boot, update, view)` builder, renders
-//! a top bar (title + a light/dark theme toggle) above an empty content area,
-//! and wires the theme through application state. No Hyprland logic exists yet.
+//! This step wires `hyprconf-core` into the UI: on launch it locates and parses
+//! the user's Hyprland config off the UI thread (via an `iced::Task`), then lets
+//! the user browse it through a sidebar of sections/collections, a live
+//! fuzzy-search box, and a status bar. Editing/saving arrive later.
 
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Element, Length, Theme};
+mod fuzzy;
+mod load;
+mod view;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use iced::{Element, Task, Theme};
+
+use hyprconf_core::schema::{CollectionId, Schema};
+
+use crate::load::LoadState;
 
 fn main() -> anyhow::Result<()> {
     init_tracing();
 
+    let args = parse_args();
     tracing::info!(
         gui_version = env!("CARGO_PKG_VERSION"),
         core_version = hyprconf_core::version(),
+        config = ?args.config,
+        check = args.check,
         "starting hyprconf",
     );
 
-    // Iced 0.14 functional builder:
-    //   application(boot, update, view) -> Application
-    // where `boot` is `Fn() -> State` (or `Fn() -> (State, Task<Message>)`).
-    //
-    // ASSUMPTION (iced 0.14): the first argument is the state initialiser, and
-    // `.title`/`.theme` take `Fn(&State) -> _`. Verified against the crate at
-    // build time in this step.
-    iced::application(App::new, App::update, App::view)
+    // Headless sanity check: load and report, without opening a window.
+    if args.check {
+        return run_check(args.config);
+    }
+
+    let explicit = args.config;
+    iced::application(move || App::boot(explicit.clone()), App::update, App::view)
         .title(App::title)
         .theme(App::theme)
         .run()?;
@@ -32,31 +44,73 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Initialise `tracing` with an `EnvFilter` so `RUST_LOG` is respected and we
-/// fall back to `info` when it is unset.
+/// Parsed command-line arguments.
+#[derive(Debug, Default)]
+struct Args {
+    config: Option<PathBuf>,
+    check: bool,
+}
+
+/// Parse `--config <path>` / `--config=<path>` and `--check`.
+fn parse_args() -> Args {
+    let mut parsed = Args::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--config=") {
+            parsed.config = Some(PathBuf::from(value));
+        } else if arg == "--config" {
+            parsed.config = args.next().map(PathBuf::from);
+        } else if arg == "--check" {
+            parsed.check = true;
+        }
+    }
+    parsed
+}
+
+/// Load the config and print a one-line summary; used by `--check` (no window).
+fn run_check(explicit: Option<PathBuf>) -> anyhow::Result<()> {
+    match load::load_config(explicit) {
+        LoadState::Loaded(loaded) => {
+            println!(
+                "loaded {} config: {} ({} options set, {} warnings, {} included file(s))",
+                load::format_label(loaded.format),
+                loaded.source.display(),
+                loaded.config.option_count(),
+                loaded.warnings,
+                loaded.included_files,
+            );
+            Ok(())
+        }
+        LoadState::NotFound { searched } => {
+            let searched = searched
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!("no configuration found (searched: {searched})")
+        }
+        LoadState::Error { path, message } => {
+            anyhow::bail!("failed to load {}: {message}", path.display())
+        }
+        LoadState::Loading => Ok(()),
+    }
+}
+
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    // `try_init` so running tests or embedding the GUI twice never panics on a
-    // double-initialised global subscriber.
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
-/// Which built-in Iced theme the window is currently rendered with.
-///
-/// We model this explicitly (rather than storing an `iced::Theme`) so the
-/// toggle logic stays trivial and we keep room to map to custom themes later.
+/// Light/dark appearance, mapped to a built-in Iced theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Appearance {
+pub(crate) enum Appearance {
     Light,
     #[default]
     Dark,
 }
 
 impl Appearance {
-    /// The opposite appearance, used by the toggle.
     fn toggled(self) -> Self {
         match self {
             Appearance::Light => Appearance::Dark,
@@ -64,7 +118,6 @@ impl Appearance {
         }
     }
 
-    /// Map our appearance to a concrete built-in Iced theme.
     fn theme(self) -> Theme {
         match self {
             Appearance::Light => Theme::Light,
@@ -72,73 +125,111 @@ impl Appearance {
         }
     }
 
-    /// Label for the button that switches to the *other* appearance.
-    fn toggle_label(self) -> &'static str {
+    pub(crate) fn toggle_label(self) -> &'static str {
         match self {
-            // Currently light -> offer to switch to dark, and vice versa.
             Appearance::Light => "Switch to dark",
             Appearance::Dark => "Switch to light",
         }
     }
 }
 
-/// Top-level application state (the Elm "model").
-#[derive(Debug, Default)]
-struct App {
-    appearance: Appearance,
+/// Which sidebar entry is selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Selection {
+    /// A schema section, by id.
+    Section(String),
+    /// A structured collection.
+    Collection(CollectionId),
 }
 
-/// Messages produced by the UI / side effects (the Elm "messages").
+/// Messages produced by the UI and async tasks.
 #[derive(Debug, Clone)]
-enum Message {
-    /// The user toggled between the light and dark theme.
+pub(crate) enum Message {
+    /// The light/dark theme was toggled.
     ThemeToggled,
+    /// The background load finished.
+    Loaded(Arc<LoadState>),
+    /// A sidebar entry was selected.
+    Selected(Selection),
+    /// The search query changed.
+    SearchChanged(String),
+}
+
+/// Top-level application state.
+#[derive(Debug)]
+pub(crate) struct App {
+    pub(crate) appearance: Appearance,
+    pub(crate) schema: &'static Schema,
+    pub(crate) load: LoadState,
+    pub(crate) selected: Selection,
+    pub(crate) search: String,
 }
 
 impl App {
-    /// Boot function: produce the initial application state.
-    fn new() -> Self {
-        Self::default()
+    /// Boot: build the initial state and kick off the (non-blocking) load.
+    fn boot(explicit: Option<PathBuf>) -> (Self, Task<Message>) {
+        let schema = Schema::shared();
+        let selected = schema
+            .sections()
+            .first()
+            .map(|s| Selection::Section(s.id.clone()))
+            .unwrap_or(Selection::Collection(CollectionId::Keybinds));
+
+        let app = Self {
+            appearance: Appearance::default(),
+            schema,
+            load: LoadState::Loading,
+            selected,
+            search: String::new(),
+        };
+
+        let task = Task::perform(async move { load::load_config(explicit) }, |state| {
+            Message::Loaded(Arc::new(state))
+        });
+
+        (app, task)
     }
 
-    /// Window title (Iced calls this with `&State`).
     fn title(&self) -> String {
         format!("hyprconf {}", env!("CARGO_PKG_VERSION"))
     }
 
-    /// Active theme (Iced calls this with `&State`).
     fn theme(&self) -> Theme {
         self.appearance.theme()
     }
 
-    /// Elm `update`: fold a [`Message`] into the state.
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ThemeToggled => {
-                self.appearance = self.appearance.toggled();
-                tracing::debug!(?self.appearance, "theme toggled");
+            Message::ThemeToggled => self.appearance = self.appearance.toggled(),
+            Message::Loaded(state) => {
+                match &*state {
+                    LoadState::Loaded(loaded) => tracing::info!(
+                        format = load::format_label(loaded.format),
+                        source = %loaded.source.display(),
+                        options = loaded.config.option_count(),
+                        warnings = loaded.warnings,
+                        "configuration loaded",
+                    ),
+                    LoadState::NotFound { searched } => {
+                        tracing::warn!(?searched, "no configuration found");
+                    }
+                    LoadState::Error { path, message } => {
+                        tracing::error!(path = %path.display(), %message, "failed to load configuration");
+                    }
+                    LoadState::Loading => {}
+                }
+                self.load = (*state).clone();
             }
+            Message::Selected(selection) => {
+                self.selected = selection;
+                self.search.clear();
+            }
+            Message::SearchChanged(query) => self.search = query,
         }
+        Task::none()
     }
 
-    /// Elm `view`: render the current state into widgets.
     fn view(&self) -> Element<'_, Message> {
-        let top_bar = row![
-            text("hyprconf").size(22),
-            // Flexible spacer pushes the toggle to the right edge of the bar.
-            Space::new().width(Length::Fill),
-            button(text(self.appearance.toggle_label())).on_press(Message::ThemeToggled),
-        ]
-        .spacing(12)
-        .padding(12)
-        .align_y(Alignment::Center);
-
-        // Empty content area for now — future steps fill this with config panels.
-        let content = container(column![])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(12);
-
-        column![top_bar, content].into()
+        view::view(self)
     }
 }
