@@ -1,0 +1,26 @@
+[package]
+name = "hyprconf-gui"
+description = "Iced desktop GUI for viewing and editing the full surface of Hyprland configuration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+default-run = "hyprconf-gui"
+
+[[bin]]
+name = "hyprconf-gui"
+path = "src/main.rs"
+
+[dependencies]
+hyprconf-core.workspace = true
+
+iced.workspace = true
+
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

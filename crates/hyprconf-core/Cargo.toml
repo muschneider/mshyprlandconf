@@ -1,0 +1,18 @@
+[package]
+name = "hyprconf-core"
+description = "UI-free core for hyprconf: format-agnostic Hyprland config model, schema, parsers, serializers and validation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+indexmap.workspace = true
+glob.workspace = true
+full_moon.workspace = true
+
+[lints]
+workspace = true

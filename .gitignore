@@ -1,0 +1,33 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+
+# Coverage and test reports
+/coverage/
+/tarpaulin-report.html
+/lcov.info
+
+# Local environment overrides
+/.env
+/.env.*
+!/.env.example
+/.direnv/
+/mise.local.toml
+
+# Local AI prompts and session transcripts
+/prompts.md
+/session-ses_*.md
+
+# Editor / OS noise
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,6 @@
+# Only stable rustfmt options are used so `cargo fmt --check` is reproducible on
+# the stable toolchain used in CI.
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_small_heuristics = "Default"

@@ -1,0 +1,8 @@
+[tools]
+rust = "latest"
+just = "latest"
+
+[env]
+# Default log level for local `mise run` / `just` invocations; overridable via
+# the shell environment (e.g. `RUST_LOG=debug just run`).
+RUST_LOG = "info"
