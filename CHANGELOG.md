@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-04
+
+### Changed — GUI visual redesign (`hyprconf-gui`)
+
+- **Theming.** Replaced the light/dark toggle with a **theme picker**
+  (`pick_list` over all 22 built-in Iced themes); the default is now
+  **Catppuccin Mocha** (fits the Hyprland aesthetic). All custom styling is
+  derived from the active theme's *extended palette*, so it stays readable in
+  every theme (verified in both Catppuccin Mocha and Catppuccin Latte).
+- **Layout & hierarchy.** Restructured into a styled **header bar**
+  (brand + search + theme picker), a tinted **sidebar panel**, a padded
+  **content area**, and a **status bar** — each with theme-aware backgrounds so
+  the regions read as distinct panels.
+- **Icons.** Every section and collection now has an icon in the sidebar, the
+  pane header and search results (emoji glyphs; degrade to a `•` bullet if a
+  glyph is unavailable).
+- **Option cards.** Options render as rounded, bordered cards: bold label,
+  dimmed `section:path`, and the value **right-aligned in the accent color**;
+  schema defaults are muted and tagged with a small `default` badge.
+- **Sidebar polish.** Custom nav-button styling (accent fill when selected,
+  subtle hover), uppercase group headers, and **live count badges** on each
+  collection. Search results use a hover-highlight row style and keep icons.
+- **Status bar.** A colored format badge (`conf`/`Lua`), the source path,
+  included-file count, options-set count, and warnings (in the danger color).
+
+### Notes
+
+- Icons rely on a system emoji font (standard on a Hyprland desktop); they are
+  purely decorative, so missing glyphs never hide information.
+- `main.rs` now stores an `iced::Theme` directly (replacing the `Appearance`
+  enum); `Message::ThemeSelected(Theme)` replaces `ThemeToggled`. No core or
+  test changes; all 83 tests still pass.
+
 ## [0.5.0] - 2026-06-04
 
 ### Added — the core wired into the GUI (`hyprconf-gui`)
@@ -295,7 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/hyprconf/hyprconf/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/hyprconf/hyprconf/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hyprconf/hyprconf/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hyprconf/hyprconf/compare/v0.2.0...v0.3.0

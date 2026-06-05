@@ -102,37 +102,6 @@ fn init_tracing() {
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
-/// Light/dark appearance, mapped to a built-in Iced theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Appearance {
-    Light,
-    #[default]
-    Dark,
-}
-
-impl Appearance {
-    fn toggled(self) -> Self {
-        match self {
-            Appearance::Light => Appearance::Dark,
-            Appearance::Dark => Appearance::Light,
-        }
-    }
-
-    fn theme(self) -> Theme {
-        match self {
-            Appearance::Light => Theme::Light,
-            Appearance::Dark => Theme::Dark,
-        }
-    }
-
-    pub(crate) fn toggle_label(self) -> &'static str {
-        match self {
-            Appearance::Light => "Switch to dark",
-            Appearance::Dark => "Switch to light",
-        }
-    }
-}
-
 /// Which sidebar entry is selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Selection {
@@ -145,8 +114,8 @@ pub(crate) enum Selection {
 /// Messages produced by the UI and async tasks.
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
-    /// The light/dark theme was toggled.
-    ThemeToggled,
+    /// A theme was chosen from the picker.
+    ThemeSelected(Theme),
     /// The background load finished.
     Loaded(Arc<LoadState>),
     /// A sidebar entry was selected.
@@ -158,7 +127,7 @@ pub(crate) enum Message {
 /// Top-level application state.
 #[derive(Debug)]
 pub(crate) struct App {
-    pub(crate) appearance: Appearance,
+    pub(crate) theme: Theme,
     pub(crate) schema: &'static Schema,
     pub(crate) load: LoadState,
     pub(crate) selected: Selection,
@@ -176,7 +145,7 @@ impl App {
             .unwrap_or(Selection::Collection(CollectionId::Keybinds));
 
         let app = Self {
-            appearance: Appearance::default(),
+            theme: Theme::CatppuccinMocha,
             schema,
             load: LoadState::Loading,
             selected,
@@ -195,12 +164,12 @@ impl App {
     }
 
     fn theme(&self) -> Theme {
-        self.appearance.theme()
+        self.theme.clone()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ThemeToggled => self.appearance = self.appearance.toggled(),
+            Message::ThemeSelected(theme) => self.theme = theme,
             Message::Loaded(state) => {
                 match &*state {
                     LoadState::Loaded(loaded) => tracing::info!(
