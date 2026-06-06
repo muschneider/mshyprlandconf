@@ -1,18 +1,26 @@
 //! All rendering. Pure functions over `&App` producing Iced elements.
 
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, text, text_input, Column, Space,
+    button, column, container, pick_list, row, scrollable, slider, text, text_input, toggler,
+    tooltip, Column, Space,
 };
-use iced::{Alignment, Background, Border, Element, Font, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Font, Length, Theme};
 
 use hyprconf_core::conf::value_to_conf;
-use hyprconf_core::schema::{CollectionId, OptionSpec};
+use hyprconf_core::schema::{CollectionId, OptionSpec, ValueType};
 use hyprconf_core::structured::{
     Animation, Bezier, EnvVar, Exec, ExecKind, Keybind, LayerRule, MonitorRule, Submap, Variable,
     WindowRule, WorkspaceRule,
 };
+use hyprconf_core::value::Color as HyprColor;
 use hyprconf_core::Value;
 
+use crate::edit::{
+    env_issue, exec_issue, extra_field, fmt_num, has_mod, keybind_issue, layer_rule_issue,
+    monitor_issue, parse_matchers, window_rule_issue, BindFlag, CollectionAction, ColorChannel,
+    Dir, EditAction, EnvEdit, ExecEdit, KeybindEdit, LayerRuleEdit, MonitorEdit, Slot,
+    WindowRuleEdit, DISPATCHERS, MODS,
+};
 use crate::load::{format_label, LoadState, Loaded};
 use crate::{fuzzy, App, Message, Selection};
 
@@ -60,15 +68,40 @@ fn header(app: &App) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Alignment::Center);
 
-    container(
-        row![brand, search, theme_picker]
-            .spacing(20)
-            .align_y(Alignment::Center),
+    let mut bar = row![brand, search].spacing(20).align_y(Alignment::Center);
+    if let Some(changes) = changes_indicator(app) {
+        bar = bar.push(changes);
+    }
+    bar = bar.push(theme_picker);
+
+    container(bar)
+        .padding([12, 18])
+        .width(Length::Fill)
+        .style(bar_style)
+        .into()
+}
+
+/// The clickable "N unsaved" pill (only when a config is loaded).
+fn changes_indicator(app: &App) -> Option<Element<'_, Message>> {
+    let loaded = app.load.loaded()?;
+    let count = loaded.total_unsaved();
+    let (label, kind) = if count == 0 {
+        ("no changes".to_string(), false)
+    } else {
+        (format!("● {count} unsaved"), true)
+    };
+    let style: fn(&Theme, button::Status) -> button::Style = if kind {
+        changes_button_style
+    } else {
+        ghost_button
+    };
+    Some(
+        button(text(label).size(13))
+            .padding([6, 12])
+            .on_press(Message::ToggleChanges)
+            .style(style)
+            .into(),
     )
-    .padding([12, 18])
-    .width(Length::Fill)
-    .style(bar_style)
-    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +218,9 @@ fn content(app: &App) -> Element<'_, Message> {
         LoadState::NotFound { searched } => not_found_view(searched),
         LoadState::Error { path, message } => error_view(&path.display().to_string(), message),
         LoadState::Loaded(loaded) => {
-            if app.search.trim().is_empty() {
+            if app.show_changes {
+                changes_view(app, loaded)
+            } else if app.search.trim().is_empty() {
                 match &app.selected {
                     Selection::Section(id) => section_view(app, loaded, id),
                     Selection::Collection(id) => collection_view(app, loaded, *id),
@@ -301,48 +336,491 @@ fn section_view(app: &App, loaded: &Loaded, id: &str) -> Element<'static, Messag
         Space::new().height(Length::Fixed(4.0)).into(),
     ];
     for opt in &section.options {
-        items.push(option_card(opt, loaded));
+        items.push(option_editor(opt, loaded));
     }
 
     scroll(items)
 }
 
-fn option_card(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
-    let (display, is_default) = match loaded.config.get(&opt.path) {
-        Some(value) => (render_value(value), false),
-        None => (render_value(&opt.default), true),
-    };
+// ---------------------------------------------------------------------------
+// per-option editor
+// ---------------------------------------------------------------------------
 
-    let value_widget: Element<Message> = if is_default {
-        row![
-            text(display).size(14).style(muted),
-            container(text("default").size(10).style(muted))
-                .padding([1, 6])
-                .style(badge_style),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        text(display).size(14).style(accent).into()
-    };
+fn option_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let dirty = loaded.is_dirty(&path);
+    let is_default = loaded.config.get(&path).is_none();
 
-    let header = row![
-        text(opt.label.clone())
-            .size(15)
-            .width(Length::FillPortion(2)),
-        container(value_widget)
-            .width(Length::FillPortion(3))
-            .align_x(Alignment::End),
+    let label_row = row![
+        text(opt.label.clone()).size(15),
+        info_tooltip(&opt.description),
+        dirty_dot(dirty),
+        Space::new().width(Length::Fill),
+        reset_button(path.clone(), is_default),
     ]
-    .spacing(12)
+    .spacing(8)
     .align_y(Alignment::Center);
 
-    container(column![header, text(opt.path.clone()).size(11).style(muted)].spacing(3))
-        .padding([10, 14])
+    let mut col = column![label_row, type_editor(opt, loaded)].spacing(10);
+
+    if let Some(err) = loaded.first_error(&path) {
+        col = col.push(text(format!("⚠ {err}")).size(11).style(danger));
+    }
+    col = col.push(text(opt.path.clone()).size(10).style(muted));
+
+    container(col)
+        .padding([12, 16])
         .width(Length::Fill)
         .style(card_style)
         .into()
+}
+
+fn info_tooltip(description: &str) -> Element<'static, Message> {
+    if description.is_empty() {
+        return Space::new().width(0).into();
+    }
+    tooltip(
+        text("ⓘ").size(12).style(muted),
+        container(text(description.to_string()).size(12))
+            .padding([6, 10])
+            .max_width(320.0)
+            .style(tooltip_style),
+        tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+fn dirty_dot(dirty: bool) -> Element<'static, Message> {
+    if dirty {
+        text("●").size(10).style(accent).into()
+    } else {
+        Space::new().width(0).into()
+    }
+}
+
+fn reset_button(path: String, is_default: bool) -> Element<'static, Message> {
+    let button = button(text("↺ reset").size(12))
+        .padding([3, 8])
+        .style(ghost_button);
+    // Resetting an already-default option is a no-op; disable the press then.
+    let button = if is_default {
+        button
+    } else {
+        button.on_press(Message::Edit(EditAction::Reset(path)))
+    };
+    tooltip(
+        button,
+        container(text("Reset to default").size(12))
+            .padding([6, 10])
+            .style(tooltip_style),
+        tooltip::Position::Left,
+    )
+    .into()
+}
+
+fn type_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    match &opt.value_type {
+        ValueType::Bool => bool_editor(opt, loaded),
+        ValueType::Int => number_editor(opt, loaded, true),
+        ValueType::Float => number_editor(opt, loaded, false),
+        ValueType::String => string_editor(opt, loaded),
+        ValueType::Enum(_) => enum_editor(opt, loaded),
+        ValueType::Color => color_editor(opt, loaded),
+        ValueType::Gradient => gradient_editor(opt, loaded),
+        ValueType::Vec2 => vec2_editor(opt, loaded),
+        _ => text("(not editable here)").size(13).style(muted).into(),
+    }
+}
+
+fn bool_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let on = matches!(loaded.value_for(opt), Value::Bool(true));
+    let path = opt.path.clone();
+    row![
+        toggler(on)
+            .on_toggle(move |b| Message::Edit(EditAction::SetBool(path.clone(), b)))
+            .size(22),
+        text(if on { "Enabled" } else { "Disabled" })
+            .size(13)
+            .style(muted),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn number_editor(opt: &OptionSpec, loaded: &Loaded, is_int: bool) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let current = match loaded.value_for(opt) {
+        Value::Int(i) => i as f64,
+        Value::Float(x) => x,
+        _ => 0.0,
+    };
+    let draft = loaded
+        .draft(&path, Slot::Main)
+        .map(str::to_string)
+        .unwrap_or_else(|| fmt_num(current));
+    let has_err = loaded.field_error(&path, Slot::Main).is_some();
+
+    let input = text_field(&draft, &path, Slot::Main, has_err, Length::Fixed(120.0), "");
+
+    let mut row = row![]
+        .spacing(14)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+    if let Some(range) = &opt.range {
+        if let (Some(min), Some(max)) = (range.min, range.max) {
+            let value = current.clamp(min, max);
+            let p = path.clone();
+            let step = if is_int {
+                range.step.unwrap_or(1.0).max(1.0)
+            } else {
+                range.step.unwrap_or(((max - min) / 100.0).max(0.001))
+            };
+            let s = slider(min..=max, value, move |v| {
+                if is_int {
+                    Message::Edit(EditAction::SetIntSlider(p.clone(), v.round() as i64))
+                } else {
+                    Message::Edit(EditAction::SetFloatSlider(p.clone(), v))
+                }
+            })
+            .step(step)
+            .width(Length::Fill);
+            row = row.push(s);
+        }
+    }
+    row.push(input).into()
+}
+
+fn string_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let current = match loaded.value_for(opt) {
+        Value::String(s) => s,
+        other => value_to_conf(&other),
+    };
+    let draft = loaded
+        .draft(&path, Slot::Main)
+        .map(str::to_string)
+        .unwrap_or(current);
+    text_field(&draft, &path, Slot::Main, false, Length::Fill, "value")
+}
+
+fn enum_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let variants: Vec<String> = opt
+        .enum_variants()
+        .map(|vs| vs.iter().map(|v| v.name.clone()).collect())
+        .unwrap_or_default();
+    let current = match loaded.value_for(opt) {
+        Value::Enum(name) => Some(name),
+        _ => None,
+    };
+    pick_list(variants, current, move |v| {
+        Message::Edit(EditAction::SetEnum(path.clone(), v))
+    })
+    .padding([6, 10])
+    .text_size(14)
+    .width(Length::Fixed(240.0))
+    .into()
+}
+
+fn color_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let color = match loaded.value_for(opt) {
+        Value::Color(c) => c,
+        _ => HyprColor::rgba(0, 0, 0, 0xff),
+    };
+    let hex_draft = loaded
+        .draft(&path, Slot::Hex)
+        .map(str::to_string)
+        .unwrap_or_else(|| color.to_rgba_string());
+    let hex_err = loaded.field_error(&path, Slot::Hex).is_some();
+
+    let top = row![
+        color_swatch(color, 34.0, 24.0),
+        text_field(
+            &hex_draft,
+            &path,
+            Slot::Hex,
+            hex_err,
+            Length::Fixed(190.0),
+            "rgba(rrggbbaa)"
+        ),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let sliders = column![
+        channel_slider(&path, ColorChannel::R, "R", color.r),
+        channel_slider(&path, ColorChannel::G, "G", color.g),
+        channel_slider(&path, ColorChannel::B, "B", color.b),
+        channel_slider(&path, ColorChannel::A, "A", color.a),
+    ]
+    .spacing(4);
+
+    column![top, sliders].spacing(10).into()
+}
+
+fn channel_slider(
+    path: &str,
+    channel: ColorChannel,
+    label: &'static str,
+    value: u8,
+) -> Element<'static, Message> {
+    let p = path.to_string();
+    row![
+        text(label).size(12).style(muted).width(Length::Fixed(14.0)),
+        slider(0.0..=255.0, value as f64, move |v| {
+            Message::Edit(EditAction::SetColorChannel(
+                p.clone(),
+                channel,
+                v.round() as u8,
+            ))
+        })
+        .step(1.0)
+        .width(Length::Fill),
+        text(value.to_string()).size(12).width(Length::Fixed(32.0)),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn gradient_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let gradient = match loaded.value_for(opt) {
+        Value::Gradient(g) => g,
+        _ => return text("(invalid gradient)").size(13).style(danger).into(),
+    };
+
+    let mut rows: Vec<Element<Message>> = Vec::new();
+    let count = gradient.stops.len();
+    for (i, stop) in gradient.stops.iter().enumerate() {
+        let draft = loaded
+            .draft(&path, Slot::Stop(i))
+            .map(str::to_string)
+            .unwrap_or_else(|| stop.to_rgba_string());
+        let err = loaded.field_error(&path, Slot::Stop(i)).is_some();
+        let p = path.clone();
+        let remove = if count > 1 {
+            button(text("✕").size(12))
+                .padding([3, 7])
+                .on_press(Message::Edit(EditAction::RemoveStop(p, i)))
+                .style(ghost_button)
+        } else {
+            button(text("✕").size(12))
+                .padding([3, 7])
+                .style(ghost_button)
+        };
+        rows.push(
+            row![
+                color_swatch(*stop, 30.0, 22.0),
+                text_field(&draft, &path, Slot::Stop(i), err, Length::Fill, "rgba(...)"),
+                remove,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+
+    let add_path = path.clone();
+    let add = button(text("+ add stop").size(12))
+        .padding([4, 10])
+        .on_press(Message::Edit(EditAction::AddStop(add_path)))
+        .style(ghost_button);
+
+    let angle_draft = loaded
+        .draft(&path, Slot::Angle)
+        .map(str::to_string)
+        .unwrap_or_else(|| gradient.angle_deg.map(fmt_num).unwrap_or_default());
+    let angle_err = loaded.field_error(&path, Slot::Angle).is_some();
+    let angle_row = row![
+        add,
+        Space::new().width(Length::Fill),
+        text("Angle°").size(12).style(muted),
+        text_field(
+            &angle_draft,
+            &path,
+            Slot::Angle,
+            angle_err,
+            Length::Fixed(80.0),
+            "deg"
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    column![Column::with_children(rows).spacing(6), angle_row]
+        .spacing(8)
+        .into()
+}
+
+fn vec2_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> {
+    let path = opt.path.clone();
+    let vec2 = match loaded.value_for(opt) {
+        Value::Vec2(v) => v,
+        _ => hyprconf_core::value::Vec2::new(0.0, 0.0),
+    };
+    let xd = loaded
+        .draft(&path, Slot::X)
+        .map(str::to_string)
+        .unwrap_or_else(|| fmt_num(vec2.x));
+    let yd = loaded
+        .draft(&path, Slot::Y)
+        .map(str::to_string)
+        .unwrap_or_else(|| fmt_num(vec2.y));
+    let xe = loaded.field_error(&path, Slot::X).is_some();
+    let ye = loaded.field_error(&path, Slot::Y).is_some();
+
+    row![
+        text("x").size(13).style(muted),
+        text_field(&xd, &path, Slot::X, xe, Length::Fixed(110.0), ""),
+        text("y").size(13).style(muted),
+        text_field(&yd, &path, Slot::Y, ye, Length::Fixed(110.0), ""),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A validated text input bound to a field's draft.
+fn text_field(
+    value: &str,
+    path: &str,
+    slot: Slot,
+    has_error: bool,
+    width: Length,
+    placeholder: &str,
+) -> Element<'static, Message> {
+    let p = path.to_string();
+    text_input(placeholder, value)
+        .on_input(move |s| Message::Edit(EditAction::EditText(p.clone(), slot.clone(), s)))
+        .padding([6, 8])
+        .size(14)
+        .width(width)
+        .style(move |theme: &Theme, status| input_style(theme, status, has_error))
+        .into()
+}
+
+/// A small rounded color swatch.
+fn color_swatch(color: HyprColor, w: f32, h: f32) -> Element<'static, Message> {
+    let fill = Color::from_rgba8(color.r, color.g, color.b, color.a as f32 / 255.0);
+    container(
+        Space::new()
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h)),
+    )
+    .style(move |theme: &Theme| container::Style {
+        background: Some(fill.into()),
+        border: Border {
+            color: theme.extended_palette().background.strong.color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// pending changes view
+// ---------------------------------------------------------------------------
+
+fn changes_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
+    let diff = loaded.pending_diff();
+    let touched = loaded.touched_collections();
+    let total = diff.len() + touched.len();
+    let trailing = format!("{total} change{}", if total == 1 { "" } else { "s" });
+
+    let mut items: Vec<Element<Message>> = vec![
+        pane_header(
+            "✎",
+            "Pending changes".to_string(),
+            "Unsaved edits relative to the loaded file.".to_string(),
+            trailing,
+        ),
+        Space::new().height(Length::Fixed(4.0)).into(),
+    ];
+
+    if total == 0 {
+        items.push(
+            container(text("No unsaved changes.").size(14).style(muted))
+                .padding([10, 14])
+                .into(),
+        );
+    }
+
+    for id in touched {
+        let label = app
+            .schema
+            .collection(id)
+            .map(|c| c.label.clone())
+            .unwrap_or_default();
+        let count = collection_count(app, id);
+        items.push(
+            container(
+                row![
+                    text(format!("{} {}", collection_icon(id), label)).size(14),
+                    Space::new().width(Length::Fill),
+                    text(format!("edited · {count} entries"))
+                        .size(12)
+                        .style(accent),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding([10, 14])
+            .width(Length::Fill)
+            .style(card_style)
+            .into(),
+        );
+    }
+
+    for (path, old, new) in diff {
+        let reset_path = path.clone();
+        let row = row![
+            column![
+                text(path).size(14),
+                row![
+                    text(old).size(12).style(muted),
+                    text("→").size(12).style(muted),
+                    text(new).size(12).style(accent),
+                ]
+                .spacing(8),
+            ]
+            .spacing(3)
+            .width(Length::Fill),
+            button(text("↺ reset").size(12))
+                .padding([3, 8])
+                .on_press(Message::Edit(EditAction::Reset(reset_path)))
+                .style(ghost_button),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+
+        items.push(
+            container(row)
+                .padding([10, 14])
+                .width(Length::Fill)
+                .style(card_style)
+                .into(),
+        );
+    }
+
+    scroll(items)
+}
+
+/// Collections that have full row editors (others are shown read-only).
+fn is_editable(id: CollectionId) -> bool {
+    matches!(
+        id,
+        CollectionId::Keybinds
+            | CollectionId::WindowRules
+            | CollectionId::LayerRules
+            | CollectionId::Monitors
+            | CollectionId::Submaps
+            | CollectionId::Env
+            | CollectionId::Execs
+    )
 }
 
 fn collection_view(app: &App, loaded: &Loaded, id: CollectionId) -> Element<'static, Message> {
@@ -352,29 +830,46 @@ fn collection_view(app: &App, loaded: &Loaded, id: CollectionId) -> Element<'sta
         .map(|c| (c.label.clone(), c.description.clone()))
         .unwrap_or_default();
 
-    let lines = collection_lines(loaded, id);
-    let trailing = format!(
-        "{} entr{}",
-        lines.len(),
-        if lines.len() == 1 { "y" } else { "ies" }
-    );
+    let count = collection_count(app, id);
+    let trailing = format!("{count} entr{}", if count == 1 { "y" } else { "ies" });
 
-    let mut items: Vec<Element<Message>> = vec![
-        pane_header(collection_icon(id), label, description, trailing),
-        Space::new().height(Length::Fixed(4.0)).into(),
-    ];
+    let mut items: Vec<Element<Message>> = vec![pane_header(
+        collection_icon(id),
+        label,
+        description,
+        trailing,
+    )];
 
-    if lines.is_empty() {
+    if is_editable(id) {
         items.push(
-            container(
-                text("No entries in this configuration.")
-                    .size(13)
-                    .style(muted),
-            )
-            .padding([10, 14])
-            .into(),
+            button(text(format!("+ add {}", singular(id))).size(13))
+                .padding([6, 12])
+                .on_press(Message::CollectionEdit(CollectionAction::Add(id)))
+                .style(ghost_button)
+                .into(),
         );
+        items.extend(collection_rows(loaded, id, count));
+        if count == 0 {
+            items.push(
+                container(text("No entries yet.").size(13).style(muted))
+                    .padding([8, 4])
+                    .into(),
+            );
+        }
     } else {
+        // Read-only collections (workspaces / beziers / animations) for now.
+        let lines = collection_lines(loaded, id);
+        if lines.is_empty() {
+            items.push(
+                container(
+                    text("No entries in this configuration.")
+                        .size(13)
+                        .style(muted),
+                )
+                .padding([10, 14])
+                .into(),
+            );
+        }
         for line in lines {
             items.push(
                 container(text(line).size(13))
@@ -387,6 +882,471 @@ fn collection_view(app: &App, loaded: &Loaded, id: CollectionId) -> Element<'sta
     }
 
     scroll(items)
+}
+
+fn singular(id: CollectionId) -> &'static str {
+    match id {
+        CollectionId::Keybinds => "keybind",
+        CollectionId::WindowRules => "window rule",
+        CollectionId::LayerRules => "layer rule",
+        CollectionId::Monitors => "monitor",
+        CollectionId::Submaps => "submap",
+        CollectionId::Env => "variable",
+        CollectionId::Execs => "command",
+        _ => "entry",
+    }
+}
+
+fn collection_rows(
+    loaded: &Loaded,
+    id: CollectionId,
+    count: usize,
+) -> Vec<Element<'static, Message>> {
+    let c = &loaded.config;
+    match id {
+        CollectionId::Keybinds => c
+            .keybinds
+            .iter()
+            .enumerate()
+            .map(|(i, t)| keybind_row(i, &t.value, count))
+            .collect(),
+        CollectionId::WindowRules => c
+            .window_rules
+            .iter()
+            .enumerate()
+            .map(|(i, t)| window_rule_row(i, &t.value, count))
+            .collect(),
+        CollectionId::LayerRules => c
+            .layer_rules
+            .iter()
+            .enumerate()
+            .map(|(i, t)| layer_rule_row(i, &t.value, count))
+            .collect(),
+        CollectionId::Monitors => c
+            .monitors
+            .iter()
+            .enumerate()
+            .map(|(i, t)| monitor_row(i, &t.value, count))
+            .collect(),
+        CollectionId::Submaps => c
+            .submaps
+            .iter()
+            .enumerate()
+            .map(|(i, t)| submap_row(i, &t.value, count))
+            .collect(),
+        CollectionId::Env => c
+            .env
+            .iter()
+            .enumerate()
+            .map(|(i, t)| env_row(i, &t.value, count))
+            .collect(),
+        CollectionId::Execs => c
+            .execs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| exec_row(i, &t.value, count))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The shared per-row control strip: index, reorder, duplicate, remove + issue.
+fn row_controls(
+    id: CollectionId,
+    i: usize,
+    count: usize,
+    issue: Option<String>,
+) -> Element<'static, Message> {
+    let up = icon_button(
+        "↑",
+        (i > 0).then(|| Message::CollectionEdit(CollectionAction::Move(id, i, Dir::Up))),
+    );
+    let down = icon_button(
+        "↓",
+        (i + 1 < count).then(|| Message::CollectionEdit(CollectionAction::Move(id, i, Dir::Down))),
+    );
+    let dup = icon_button(
+        "⧉",
+        Some(Message::CollectionEdit(CollectionAction::Duplicate(id, i))),
+    );
+    let del = icon_button(
+        "✕",
+        Some(Message::CollectionEdit(CollectionAction::Remove(id, i))),
+    );
+
+    let mut controls = row![
+        text(format!("#{}", i + 1)).size(12).style(muted),
+        up,
+        down,
+        dup,
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+
+    if let Some(issue) = issue {
+        controls = controls.push(text(format!("⚠ {issue}")).size(11).style(danger));
+    }
+    controls = controls.push(del);
+    controls.into()
+}
+
+fn icon_button(label: &'static str, message: Option<Message>) -> Element<'static, Message> {
+    let mut b = button(text(label).size(13))
+        .padding([2, 7])
+        .style(ghost_button);
+    if let Some(m) = message {
+        b = b.on_press(m);
+    }
+    b.into()
+}
+
+fn row_card(
+    controls: Element<'static, Message>,
+    body: Element<'static, Message>,
+) -> Element<'static, Message> {
+    container(column![controls, body].spacing(10))
+        .padding([12, 14])
+        .width(Length::Fill)
+        .style(card_style)
+        .into()
+}
+
+fn coll_text(
+    value: &str,
+    placeholder: &'static str,
+    width: Length,
+    make: impl Fn(String) -> Message + 'static,
+) -> Element<'static, Message> {
+    text_input(placeholder, value)
+        .on_input(make)
+        .padding([6, 8])
+        .size(14)
+        .width(width)
+        .into()
+}
+
+fn chip(label: String, active: bool, message: Message) -> Element<'static, Message> {
+    button(text(label).size(12))
+        .padding([3, 9])
+        .on_press(message)
+        .style(move |theme: &Theme, status| chip_style(theme, status, active))
+        .into()
+}
+
+fn keybind_row(i: usize, kb: &Keybind, count: usize) -> Element<'static, Message> {
+    let mods = row(MODS.iter().map(|&name| {
+        let active = has_mod(&kb.mods, name);
+        chip(
+            name.to_string(),
+            active,
+            Message::CollectionEdit(CollectionAction::Keybind(
+                i,
+                KeybindEdit::ToggleMod(name.to_string(), !active),
+            )),
+        )
+    }))
+    .spacing(6);
+
+    let key = coll_text(&kb.key, "key", Length::Fixed(110.0), move |s| {
+        Message::CollectionEdit(CollectionAction::Keybind(i, KeybindEdit::Key(s)))
+    });
+
+    let mut options: Vec<String> = DISPATCHERS.iter().map(|s| s.to_string()).collect();
+    if !options.contains(&kb.dispatcher) && !kb.dispatcher.is_empty() {
+        options.insert(0, kb.dispatcher.clone());
+    }
+    let dispatcher = pick_list(options, Some(kb.dispatcher.clone()), move |d| {
+        Message::CollectionEdit(CollectionAction::Keybind(i, KeybindEdit::Dispatcher(d)))
+    })
+    .text_size(14)
+    .padding([6, 10])
+    .width(Length::Fixed(200.0));
+
+    let args = coll_text(&kb.args, "arguments", Length::Fill, move |s| {
+        Message::CollectionEdit(CollectionAction::Keybind(i, KeybindEdit::Args(s)))
+    });
+
+    let flags = row![
+        flag_chip(i, "m", BindFlag::Mouse, kb.flags.mouse),
+        flag_chip(i, "e", BindFlag::Repeat, kb.flags.repeat),
+        flag_chip(i, "r", BindFlag::Release, kb.flags.release),
+        flag_chip(i, "l", BindFlag::Locked, kb.flags.locked),
+        flag_chip(i, "n", BindFlag::NonConsuming, kb.flags.non_consuming),
+        flag_chip(i, "t", BindFlag::Transparent, kb.flags.transparent),
+        flag_chip(i, "i", BindFlag::IgnoreMods, kb.flags.ignore_mods),
+        Space::new().width(Length::Fill),
+        text("submap").size(12).style(muted),
+        coll_text(
+            kb.submap.as_deref().unwrap_or(""),
+            "global",
+            Length::Fixed(130.0),
+            move |s| Message::CollectionEdit(CollectionAction::Keybind(i, KeybindEdit::Submap(s))),
+        ),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let body = column![
+        mods,
+        row![key, dispatcher, args]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        flags,
+    ]
+    .spacing(8);
+
+    row_card(
+        row_controls(CollectionId::Keybinds, i, count, keybind_issue(kb)),
+        body.into(),
+    )
+}
+
+fn flag_chip(
+    i: usize,
+    label: &'static str,
+    flag: BindFlag,
+    active: bool,
+) -> Element<'static, Message> {
+    chip(
+        label.to_string(),
+        active,
+        Message::CollectionEdit(CollectionAction::Keybind(
+            i,
+            KeybindEdit::Flag(flag, !active),
+        )),
+    )
+}
+
+fn window_rule_row(i: usize, wr: &WindowRule, count: usize) -> Element<'static, Message> {
+    let v2 = chip(
+        "v2".to_string(),
+        wr.v2,
+        Message::CollectionEdit(CollectionAction::WindowRule(i, WindowRuleEdit::V2(!wr.v2))),
+    );
+    let rule = coll_text(
+        &wr.rule,
+        "rule (e.g. float, opacity 0.9)",
+        Length::Fill,
+        move |s| Message::CollectionEdit(CollectionAction::WindowRule(i, WindowRuleEdit::Rule(s))),
+    );
+
+    let mut match_rows: Vec<Element<Message>> = Vec::new();
+    for (mi, (key, value)) in parse_matchers(&wr.matchers).into_iter().enumerate() {
+        let k = coll_text(
+            &key,
+            "class / title / …",
+            Length::Fixed(150.0),
+            move |s| {
+                Message::CollectionEdit(CollectionAction::WindowRule(
+                    i,
+                    WindowRuleEdit::MatchKey(mi, s),
+                ))
+            },
+        );
+        let v = coll_text(&value, "match value", Length::Fill, move |s| {
+            Message::CollectionEdit(CollectionAction::WindowRule(
+                i,
+                WindowRuleEdit::MatchValue(mi, s),
+            ))
+        });
+        let del = icon_button(
+            "✕",
+            Some(Message::CollectionEdit(CollectionAction::WindowRule(
+                i,
+                WindowRuleEdit::RemoveMatch(mi),
+            ))),
+        );
+        match_rows.push(
+            row![k, text(":").size(13).style(muted), v, del]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+    let add_match = button(text("+ match criterion").size(12))
+        .padding([4, 10])
+        .on_press(Message::CollectionEdit(CollectionAction::WindowRule(
+            i,
+            WindowRuleEdit::AddMatch,
+        )))
+        .style(ghost_button);
+
+    // Raw escape hatch for v1 regexes / matchers with commas the builder can't model.
+    let raw = coll_text(&wr.matchers, "raw matchers", Length::Fill, move |s| {
+        Message::CollectionEdit(CollectionAction::WindowRule(i, WindowRuleEdit::Matchers(s)))
+    });
+
+    let body = column![
+        row![text("type").size(12).style(muted), v2, rule]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        text("match criteria").size(12).style(muted),
+        Column::with_children(match_rows).spacing(6),
+        add_match,
+        row![text("raw").size(12).style(muted), raw]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    ]
+    .spacing(8);
+
+    row_card(
+        row_controls(CollectionId::WindowRules, i, count, window_rule_issue(wr)),
+        body.into(),
+    )
+}
+
+fn layer_rule_row(i: usize, lr: &LayerRule, count: usize) -> Element<'static, Message> {
+    let rule = coll_text(
+        &lr.rule,
+        "rule (e.g. blur)",
+        Length::Fixed(220.0),
+        move |s| Message::CollectionEdit(CollectionAction::LayerRule(i, LayerRuleEdit::Rule(s))),
+    );
+    let ns = coll_text(
+        &lr.namespace,
+        "namespace (e.g. waybar)",
+        Length::Fill,
+        move |s| {
+            Message::CollectionEdit(CollectionAction::LayerRule(i, LayerRuleEdit::Namespace(s)))
+        },
+    );
+    let body = row![rule, text("⟵").size(13).style(muted), ns]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    row_card(
+        row_controls(CollectionId::LayerRules, i, count, layer_rule_issue(lr)),
+        body.into(),
+    )
+}
+
+fn monitor_row(i: usize, m: &MonitorRule, count: usize) -> Element<'static, Message> {
+    let field = |label: &'static str,
+                 value: String,
+                 placeholder: &'static str,
+                 make: fn(String) -> MonitorEdit| {
+        column![
+            text(label).size(11).style(muted),
+            text_input(placeholder, &value)
+                .on_input(move |s| Message::CollectionEdit(CollectionAction::Monitor(i, make(s))))
+                .padding([6, 8])
+                .size(14),
+        ]
+        .spacing(2)
+    };
+
+    let body = column![
+        row![
+            field(
+                "connector",
+                m.name.clone(),
+                "DP-1 / desc:…",
+                MonitorEdit::Name
+            )
+            .width(Length::FillPortion(2)),
+            field("mode", m.mode.clone(), "1920x1080@144", MonitorEdit::Mode)
+                .width(Length::FillPortion(2)),
+        ]
+        .spacing(10),
+        row![
+            field(
+                "position",
+                m.position.clone(),
+                "0x0 / auto",
+                MonitorEdit::Position
+            )
+            .width(Length::FillPortion(2)),
+            field("scale", m.scale.clone(), "1 / auto", MonitorEdit::Scale)
+                .width(Length::Fixed(120.0)),
+            field(
+                "transform",
+                extra_field(&m.extra, "transform"),
+                "0-7",
+                MonitorEdit::Transform
+            )
+            .width(Length::Fixed(90.0)),
+            field("vrr", extra_field(&m.extra, "vrr"), "0-2", MonitorEdit::Vrr)
+                .width(Length::Fixed(90.0)),
+            field(
+                "mirror",
+                extra_field(&m.extra, "mirror"),
+                "DP-2",
+                MonitorEdit::Mirror
+            )
+            .width(Length::Fixed(110.0)),
+        ]
+        .spacing(10),
+    ]
+    .spacing(8);
+
+    row_card(
+        row_controls(CollectionId::Monitors, i, count, monitor_issue(m)),
+        body.into(),
+    )
+}
+
+fn submap_row(i: usize, s: &Submap, count: usize) -> Element<'static, Message> {
+    let name = coll_text(&s.name, "submap name", Length::Fixed(240.0), move |v| {
+        Message::CollectionEdit(CollectionAction::Submap(i, v))
+    });
+    let body = row![text("name").size(12).style(muted), name]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    row_card(
+        row_controls(CollectionId::Submaps, i, count, None),
+        body.into(),
+    )
+}
+
+fn env_row(i: usize, e: &EnvVar, count: usize) -> Element<'static, Message> {
+    let name = coll_text(&e.name, "NAME", Length::Fixed(220.0), move |s| {
+        Message::CollectionEdit(CollectionAction::Env(i, EnvEdit::Name(s)))
+    });
+    let value = coll_text(&e.value, "value", Length::Fill, move |s| {
+        Message::CollectionEdit(CollectionAction::Env(i, EnvEdit::Value(s)))
+    });
+    let body = row![name, text("=").size(13).style(muted), value]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    row_card(
+        row_controls(CollectionId::Env, i, count, env_issue(e)),
+        body.into(),
+    )
+}
+
+fn exec_row(i: usize, e: &Exec, count: usize) -> Element<'static, Message> {
+    let kinds = vec![
+        "exec-once".to_string(),
+        "exec".to_string(),
+        "exec-shutdown".to_string(),
+    ];
+    let current = match e.kind {
+        ExecKind::Exec => "exec",
+        ExecKind::ExecOnce => "exec-once",
+        ExecKind::ExecShutdown => "exec-shutdown",
+    }
+    .to_string();
+    let kind = pick_list(kinds, Some(current), move |label| {
+        let kind = match label.as_str() {
+            "exec" => ExecKind::Exec,
+            "exec-shutdown" => ExecKind::ExecShutdown,
+            _ => ExecKind::ExecOnce,
+        };
+        Message::CollectionEdit(CollectionAction::Exec(i, ExecEdit::Kind(kind)))
+    })
+    .text_size(14)
+    .padding([6, 10])
+    .width(Length::Fixed(150.0));
+
+    let command = coll_text(&e.command, "command", Length::Fill, move |s| {
+        Message::CollectionEdit(CollectionAction::Exec(i, ExecEdit::Command(s)))
+    });
+
+    let body = row![kind, command].spacing(8).align_y(Alignment::Center);
+    row_card(
+        row_controls(CollectionId::Execs, i, count, exec_issue(e)),
+        body.into(),
+    )
 }
 
 fn search_results(app: &App, loaded: &Loaded) -> Element<'static, Message> {
@@ -812,4 +1772,95 @@ fn result_style(theme: &Theme, status: button::Status) -> button::Style {
         },
         ..button::Style::default()
     }
+}
+
+/// A subtle, borderless button (reset/remove/add controls).
+fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
+    let p = theme.extended_palette();
+    let (background, alpha) = match status {
+        button::Status::Hovered | button::Status::Pressed => (
+            Some(p.background.strong.color.scale_alpha(0.5).into()),
+            0.95,
+        ),
+        button::Status::Disabled => (None, 0.35),
+        button::Status::Active => (None, 0.8),
+    };
+    button::Style {
+        background,
+        text_color: p.background.base.text.scale_alpha(alpha),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// A small toggle chip (modifiers, bind flags, v2): accent when active.
+fn chip_style(theme: &Theme, status: button::Status, active: bool) -> button::Style {
+    let p = theme.extended_palette();
+    let (background, text_color) = if active {
+        (Some(p.primary.base.color.into()), p.primary.base.text)
+    } else {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let color = if hovered {
+            p.background.strong.color
+        } else {
+            p.background.weak.color
+        };
+        (Some(color.into()), p.background.base.text.scale_alpha(0.85))
+    };
+    button::Style {
+        background,
+        text_color,
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// The "N unsaved" indicator pill (accent-tinted).
+fn changes_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let p = theme.extended_palette();
+    let base = p.primary.base.color;
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => base,
+        _ => base.scale_alpha(0.85),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color: p.primary.base.text,
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// The floating tooltip box.
+fn tooltip_style(theme: &Theme) -> container::Style {
+    let p = theme.extended_palette();
+    container::Style {
+        background: Some(p.background.strong.color.into()),
+        text_color: Some(p.background.strong.text),
+        border: Border {
+            color: p.background.stronger.color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A text input that flags validation errors with a danger-colored border.
+fn input_style(theme: &Theme, status: text_input::Status, has_error: bool) -> text_input::Style {
+    let mut style = text_input::default(theme, status);
+    if has_error {
+        style.border.color = theme.extended_palette().danger.base.color;
+        style.border.width = 1.5;
+    }
+    style
 }

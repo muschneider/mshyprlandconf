@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-04
+
+### Added — editors for the structured collections (`hyprconf-gui`)
+
+- **`config_to_conf` in core** (`conf::config_to_conf` / `ConfSerializer::serialize_config`):
+  fresh `.conf` generation from an in-memory `Config` (the counterpart to
+  `LuaSerializer::serialize`), emitting scalar options, env, monitors,
+  workspaces, window/layer rules, beziers, animations, exec, and keybinds
+  (grouped into `submap = NAME … submap = reset` blocks). This is what lets the
+  model serialize to **both** formats.
+- **Collection editing engine (`edit.rs`):** `CollectionAction` for structural
+  ops (`Add`/`Remove`/`Duplicate`/`Move` per `CollectionId`) and per-collection
+  field edits; touched-collection tracking folded into the global unsaved count
+  (`total_unsaved`); pure validation helpers (`keybind_issue`,
+  `window_rule_issue`, `monitor_issue`, …) and parsing helpers for mods,
+  window-rule matchers and monitor `extra` tokens.
+- **Keybind editor:** a table with add/remove/duplicate/reorder; per row a
+  **modifier multi-select** (SUPER/SHIFT/CTRL/ALT), key field, **dispatcher
+  `pick_list`** (exec, killactive, workspace, movetoworkspace, togglefloating,
+  fullscreen, movefocus, resizeactive, …), args field, **bind-flag chips**
+  (m/e/r/l/n/t/i), and a submap field. Validates empty key/dispatcher and
+  dispatchers that require arguments.
+- **Window-rule & layer-rule editors:** `windowrulev2`↔legacy `v2` toggle,
+  rule/effect field, and a **match-criteria builder** (`key : value` rows with
+  add/remove) plus a raw-matcher escape hatch for v1 regexes / commas the
+  builder can't model. Both map through the shared `WindowRule` model so they
+  serialize to `hl.window_rule({name,match})` and `windowrule[v2] = …`.
+- **Monitor editor:** connector, mode, position, scale, and transform/vrr/mirror
+  (mapped to/from the model's `extra` tokens).
+- **Submap, env, and exec editors** (exec with an `exec`/`exec-once`/
+  `exec-shutdown` picker), all with ordering.
+- **Pending-changes view** now lists edited collections alongside scalar diffs.
+
+### Tests
+
+- 6 new collection tests (23 GUI tests total): add/remove/duplicate/reorder;
+  mods + flags; the window-rule match builder; monitor transform/vrr via `extra`;
+  validation of obviously-invalid entries; and — the headline acceptance —
+  **a GUI-built keybind, window rule and monitor round-trip through BOTH `.lua`
+  and `.conf`** (serialize via the core serializers, parse back, assert value
+  equality). Plus a core `config_to_conf` test. Editors verified visually with
+  `grim` (keybind mods/flags/validation; window-rule v2 + match builder + raw).
+
+### Notes & trade-offs
+
+- The match builder splits on `,` then the first `:`; matcher values containing
+  commas (rare regexes) are handled via the **raw** field. Monitor `extra`
+  editing keeps the recognized transform/vrr/mirror tokens; other trailing
+  tokens are dropped on edit (use a future raw field if needed).
+- Workspaces / beziers / animations remain read-only this step.
+- Collection dirty-tracking is a touched-set (per-collection), not item-level
+  baseline diffing.
+
+## [0.6.0] - 2026-06-04
+
+### Added — scalar option editing (`hyprconf-gui`)
+
+- **A UI-free editing engine (`edit.rs`)** applied to the in-memory `Config`:
+  - `EditAction` covers every edit (toggle, enum pick, int/float slider, color
+    channel, text edit, gradient add/remove stop, reset).
+  - **Two-way binding:** edits commit typed `Value`s into the model; widgets
+    read back from the model.
+  - **Dirty tracking** against a load-time baseline: `dirty` set + `dirty_count`;
+    editing a field back to its baseline clears it.
+  - **Reset-to-default** sets the schema default, rebaselines and clears the
+    field's dirty flag, drafts and errors.
+  - **Non-blocking validation:** per-field draft text + error map; invalid /
+    out-of-range input is rejected (error recorded) **without mutating the
+    model** — the last valid value is preserved.
+  - A **pending-diff** API (`pending_diff`) listing `(path, baseline, current)`.
+- **Per-`ValueType` editors (`view.rs`):** `Bool`→toggler; `Int`/`Float`→
+  bounded slider (when min+max known, honoring step) + validated numeric input;
+  `String`→text input; `Enum`→`pick_list`; `Color`→swatch + `rgba()` hex field
+  + R/G/B/A channel sliders; `Gradient`→multi-stop editor (per-stop swatch + hex
+  + add/remove) with an angle field; `Vec2`→two numeric fields.
+- **Per-option affordances:** the description as an `ⓘ` hover **tooltip**, a
+  **modified** dot, and a **reset** control (disabled when already default,
+  tooltip "Reset to default"), plus inline error text with a danger-bordered
+  input.
+- **Global dirty indicator:** a header pill (`● N unsaved` / `no changes`) that
+  toggles a **Pending changes** view showing every edit as `baseline → current`
+  with a per-row reset (the "debug pending diff" surface).
+
+### Tests
+
+- 9 new `edit` unit tests (17 GUI tests total) verifying: bool/enum/int/float/
+  color/vec2/gradient edits round-trip into the model; range and garbage input
+  are rejected without corrupting the model; reset restores the default and
+  clears dirty/draft/error; and the pending-diff listing. Editors verified
+  visually via `grim` screenshots (toggler, bounded sliders, gradient stops with
+  live color swatches, reset/info controls).
+
+### Notes & trade-offs
+
+- A slider is shown only for numeric options with **both** bounds; min-only
+  options (e.g. `gaps_in`) use the validated input alone (picking an arbitrary
+  upper bound would be misleading). Step is honored by the slider; range by the
+  input.
+- Reset rebaselines the field to default, so a reset option reads as "clean"
+  (no unsaved change) per the spec — acceptable while persistence is out of
+  scope; revisit when saving lands.
+- Structured collections (keybinds/rules/monitors/…) remain read-only this step.
+
 ## [0.5.1] - 2026-06-04
 
 ### Changed — GUI visual redesign (`hyprconf-gui`)
@@ -328,7 +431,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/hyprconf/hyprconf/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/hyprconf/hyprconf/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/hyprconf/hyprconf/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/hyprconf/hyprconf/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hyprconf/hyprconf/compare/v0.3.0...v0.4.0

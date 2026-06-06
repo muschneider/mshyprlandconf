@@ -25,4 +25,4 @@ pub use document::{
 };
 pub use mapper::{bundle_to_config, document_to_config, ConfWarning};
 pub use parser::{ConfBundle, ConfError, ConfParser};
-pub use serializer::{value_to_conf, ConfSerializer};
+pub use serializer::{config_to_conf, value_to_conf, ConfSerializer};

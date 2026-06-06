@@ -5,9 +5,12 @@
 //! `~/.config/hypr`). Parsing goes through `hyprconf-core` and follows includes.
 //! This runs off the UI thread inside an `iced::Task`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use hyprconf_core::{conf, lua, Config, ConfigFormat, Schema};
+use hyprconf_core::{conf, lua, Config, ConfigFormat, Schema, Value};
+
+use crate::edit::FieldId;
 
 /// The result of attempting to load a configuration.
 #[derive(Debug, Clone)]
@@ -41,7 +44,7 @@ impl LoadState {
     }
 }
 
-/// A successfully loaded configuration plus its provenance.
+/// A successfully loaded configuration plus its provenance and live edit state.
 #[derive(Debug, Clone)]
 pub struct Loaded {
     /// The detected on-disk format.
@@ -50,10 +53,58 @@ pub struct Loaded {
     pub source: PathBuf,
     /// How many additional files were pulled in via includes.
     pub included_files: usize,
-    /// The parsed, format-agnostic configuration.
-    pub config: Config,
     /// The number of warnings emitted while mapping the file onto the schema.
     pub warnings: usize,
+    /// The current (possibly edited) configuration.
+    pub config: Config,
+    /// The effective value of each schema option at load time, used to decide
+    /// whether a field has unsaved changes.
+    pub baseline: HashMap<String, Value>,
+    /// Paths whose current value differs from [`Loaded::baseline`].
+    pub dirty: HashSet<String>,
+    /// In-progress raw text for text-based editors, keyed by field.
+    pub drafts: HashMap<FieldId, String>,
+    /// Per-field validation errors (invalid/out-of-range input).
+    pub errors: HashMap<FieldId, String>,
+    /// Structured collections that have been edited (add/remove/reorder/field).
+    pub touched: HashSet<hyprconf_core::schema::CollectionId>,
+}
+
+impl Loaded {
+    /// Build a [`Loaded`], snapshotting the baseline value of every schema
+    /// option (its file value, or its schema default if absent).
+    fn new(
+        format: ConfigFormat,
+        source: PathBuf,
+        included_files: usize,
+        config: Config,
+        warnings: usize,
+        schema: &Schema,
+    ) -> Self {
+        let baseline = schema
+            .options()
+            .map(|opt| {
+                let value = config
+                    .get(&opt.path)
+                    .cloned()
+                    .unwrap_or_else(|| opt.default.clone());
+                (opt.path.clone(), value)
+            })
+            .collect();
+
+        Self {
+            format,
+            source,
+            included_files,
+            warnings,
+            config,
+            baseline,
+            dirty: HashSet::new(),
+            drafts: HashMap::new(),
+            errors: HashMap::new(),
+            touched: HashSet::new(),
+        }
+    }
 }
 
 /// Load a configuration, optionally from an explicit path.
@@ -99,13 +150,14 @@ fn load_path(path: &Path, format: ConfigFormat, schema: &Schema) -> LoadState {
                     .path
                     .clone()
                     .unwrap_or_else(|| path.to_path_buf());
-                LoadState::Loaded(Box::new(Loaded {
+                LoadState::Loaded(Box::new(Loaded::new(
                     format,
                     source,
-                    included_files: bundle.documents.len().saturating_sub(1),
+                    bundle.documents.len().saturating_sub(1),
                     config,
-                    warnings: warnings.len(),
-                }))
+                    warnings.len(),
+                    schema,
+                )))
             }
             Err(e) => LoadState::Error {
                 path: path.to_path_buf(),
@@ -120,13 +172,14 @@ fn load_path(path: &Path, format: ConfigFormat, schema: &Schema) -> LoadState {
                     .path
                     .clone()
                     .unwrap_or_else(|| path.to_path_buf());
-                LoadState::Loaded(Box::new(Loaded {
+                LoadState::Loaded(Box::new(Loaded::new(
                     format,
                     source,
-                    included_files: bundle.documents.len().saturating_sub(1),
+                    bundle.documents.len().saturating_sub(1),
                     config,
-                    warnings: warnings.len(),
-                }))
+                    warnings.len(),
+                    schema,
+                )))
             }
             Err(e) => LoadState::Error {
                 path: path.to_path_buf(),

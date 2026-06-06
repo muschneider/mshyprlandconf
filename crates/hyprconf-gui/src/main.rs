@@ -5,6 +5,7 @@
 //! the user browse it through a sidebar of sections/collections, a live
 //! fuzzy-search box, and a status bar. Editing/saving arrive later.
 
+mod edit;
 mod fuzzy;
 mod load;
 mod view;
@@ -122,6 +123,12 @@ pub(crate) enum Message {
     Selected(Selection),
     /// The search query changed.
     SearchChanged(String),
+    /// An option was edited.
+    Edit(edit::EditAction),
+    /// A structured collection was edited.
+    CollectionEdit(edit::CollectionAction),
+    /// Toggle the pending-changes (diff) view.
+    ToggleChanges,
 }
 
 /// Top-level application state.
@@ -132,6 +139,7 @@ pub(crate) struct App {
     pub(crate) load: LoadState,
     pub(crate) selected: Selection,
     pub(crate) search: String,
+    pub(crate) show_changes: bool,
 }
 
 impl App {
@@ -150,6 +158,7 @@ impl App {
             load: LoadState::Loading,
             selected,
             search: String::new(),
+            show_changes: false,
         };
 
         let task = Task::perform(async move { load::load_config(explicit) }, |state| {
@@ -192,8 +201,20 @@ impl App {
             Message::Selected(selection) => {
                 self.selected = selection;
                 self.search.clear();
+                self.show_changes = false;
             }
             Message::SearchChanged(query) => self.search = query,
+            Message::Edit(action) => {
+                if let LoadState::Loaded(loaded) = &mut self.load {
+                    loaded.apply(action, self.schema);
+                }
+            }
+            Message::CollectionEdit(action) => {
+                if let LoadState::Loaded(loaded) = &mut self.load {
+                    loaded.apply_collection(action);
+                }
+            }
+            Message::ToggleChanges => self.show_changes = !self.show_changes,
         }
         Task::none()
     }
