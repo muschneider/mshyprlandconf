@@ -18,13 +18,16 @@
 //!   carrying provenance for comment-preserving round-trips.
 
 pub mod conf;
+pub mod fs;
 pub mod lua;
 pub mod model;
 pub mod schema;
 pub mod structured;
+pub mod validate;
 pub mod value;
 
 pub use conf::{ConfBundle, ConfDocument, ConfError, ConfParser, ConfSerializer, ConfWarning};
+pub use fs::{atomic_write, backup_existing, save_atomically, FsError, SaveReport};
 pub use lua::{LuaBundle, LuaDocument, LuaError, LuaParser, LuaSerializer, LuaWarning};
 pub use model::{Config, ConfigFormat, Provenance, Span, Tracked};
 pub use schema::{
@@ -34,6 +37,7 @@ pub use structured::{
     Animation, Bezier, EnvVar, Exec, ExecKind, Keybind, KeybindFlags, LayerRule, MonitorRule,
     StructuredValue, Submap, Variable, WindowRule, WorkspaceRule,
 };
+pub use validate::{has_errors, validate_config, ConfigProblem, Severity};
 pub use value::{Color, Gradient, Value, ValueParseError, Vec2};
 
 /// The error type returned by fallible `hyprconf-core` operations.
@@ -77,6 +81,10 @@ pub enum CoreError {
     /// An error while reading, parsing or following includes in a `.lua` file.
     #[error(transparent)]
     Lua(#[from] lua::LuaError),
+
+    /// A filesystem error while writing a config atomically.
+    #[error(transparent)]
+    Fs(#[from] fs::FsError),
 }
 
 /// A convenience [`Result`] alias whose error type is [`CoreError`].

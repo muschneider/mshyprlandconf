@@ -8,9 +8,21 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use hyprconf_core::{conf, lua, Config, ConfigFormat, Schema, Value};
+use hyprconf_core::lua::LuaWarning;
+use hyprconf_core::{conf, lua, ConfBundle, Config, ConfigFormat, Schema, Value};
 
 use crate::edit::FieldId;
+
+/// The originally-parsed source, retained so a same-format save can preserve
+/// comments/structure and write back only the files that changed.
+#[derive(Debug, Clone)]
+pub enum Origin {
+    /// Parsed from `.conf` file(s); the bundle backs preserve-mode saves.
+    Conf(ConfBundle),
+    /// Parsed from `.lua` file(s). Lua always regenerates on save, so the bundle
+    /// is not retained.
+    Lua,
+}
 
 /// The result of attempting to load a configuration.
 #[derive(Debug, Clone)]
@@ -68,17 +80,24 @@ pub struct Loaded {
     pub errors: HashMap<FieldId, String>,
     /// Structured collections that have been edited (add/remove/reorder/field).
     pub touched: HashSet<hyprconf_core::schema::CollectionId>,
+    /// The originally-parsed source (for preserve-mode/multi-file saves).
+    pub origin: Origin,
+    /// Number of dynamic Lua regions that fresh serialization would drop.
+    pub dynamic_regions: usize,
 }
 
 impl Loaded {
     /// Build a [`Loaded`], snapshotting the baseline value of every schema
     /// option (its file value, or its schema default if absent).
+    #[allow(clippy::too_many_arguments)]
     fn new(
         format: ConfigFormat,
         source: PathBuf,
         included_files: usize,
         config: Config,
         warnings: usize,
+        dynamic_regions: usize,
+        origin: Origin,
         schema: &Schema,
     ) -> Self {
         let baseline = schema
@@ -103,7 +122,15 @@ impl Loaded {
             drafts: HashMap::new(),
             errors: HashMap::new(),
             touched: HashSet::new(),
+            origin,
+            dynamic_regions,
         }
+    }
+
+    /// Whether the config was loaded from more than one file.
+    #[must_use]
+    pub fn is_multi_file(&self) -> bool {
+        self.included_files > 0
     }
 }
 
@@ -150,12 +177,19 @@ fn load_path(path: &Path, format: ConfigFormat, schema: &Schema) -> LoadState {
                     .path
                     .clone()
                     .unwrap_or_else(|| path.to_path_buf());
+                let included = bundle.documents.len().saturating_sub(1);
+                let dynamic = warnings
+                    .iter()
+                    .filter(|w| matches!(w, LuaWarning::DynamicRegion { .. }))
+                    .count();
                 LoadState::Loaded(Box::new(Loaded::new(
                     format,
                     source,
-                    bundle.documents.len().saturating_sub(1),
+                    included,
                     config,
                     warnings.len(),
+                    dynamic,
+                    Origin::Lua,
                     schema,
                 )))
             }
@@ -172,12 +206,15 @@ fn load_path(path: &Path, format: ConfigFormat, schema: &Schema) -> LoadState {
                     .path
                     .clone()
                     .unwrap_or_else(|| path.to_path_buf());
+                let included = bundle.documents.len().saturating_sub(1);
                 LoadState::Loaded(Box::new(Loaded::new(
                     format,
                     source,
-                    bundle.documents.len().saturating_sub(1),
+                    included,
                     config,
                     warnings.len(),
+                    0,
+                    Origin::Conf(bundle),
                     schema,
                 )))
             }

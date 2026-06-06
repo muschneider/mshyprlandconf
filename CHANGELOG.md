@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-04
+
+### Added — saving, format conversion, preview/diff (core + GUI)
+
+- **Core `fs` module:** `atomic_write` (write to a temp file in the same dir →
+  `fsync` → `rename`, with dir fsync and temp cleanup on failure),
+  `backup_existing` (timestamped `*.<unixsecs>.bak` copy), and `save_atomically`
+  (backup + atomic write → `SaveReport`). `CoreError::Fs` wraps `FsError`.
+- **Core `validate` module:** `validate_config(&Schema, &Config) -> Vec<ConfigProblem>`
+  with `Severity::{Error, Warning}` — out-of-range/invalid values are errors,
+  unknown keys are warnings; plus `has_errors`.
+- **Core `conf::config_to_conf`** (from 0.7.0) is the conf side of conversion;
+  `LuaSerializer::serialize` is the Lua side.
+- **GUI save flow (`save.rs`):**
+  - `plan_save` chooses **Preserve** (same-format `conf`, scalar-only edits:
+    edits the original document(s) in place via `set_option`, preserving
+    comments/structure) or **Regenerate** (format conversion, collection edits,
+    or Lua: fresh serialization).
+  - **Multi-file aware:** preserve routes each edited scalar to the source file
+    that defines it and writes back **only the files that changed**.
+  - `review` aggregates scalar + structured-collection validation into jump-to-
+    field problems; `blocked` gates the write (errors always block; warnings
+    block unless overridden).
+  - `perform_save` writes each changed file atomically with a backup.
+- **GUI save panel:** output-format selector (conf ⇄ Lua), a **dynamic-Lua-loss
+  warning** when regenerating a Lua-origin config, the validation list with
+  jump-to-field buttons + a "save anyway" override, a per-file **before/after
+  diff** (`diff.rs`, dependency-free LCS) with +/- counts, and a write button
+  disabled while blocked. On success the GUI reloads from disk. A header `save…`
+  button and a status-bar result line were added.
+
+### Tests
+
+- Core: 3 `fs` tests (create/replace, **backup preserves the prior file**,
+  **the original survives a failed write**), 3 `validate` tests, plus the
+  `config_to_conf` test.
+- GUI: 6 `save` tests — **preserve edits only the changed scalar line**
+  (comments kept); **convert conf→lua is semantically equivalent** (parse-back)
+  and **preview == on-disk**; collection edits force regenerate;
+  **lua→conf fires the dynamic-loss warning**; **multi-file preserve writes only
+  the changed include**; preserved output re-parses. Plus 3 `diff` tests. Save
+  panel verified visually with `grim`.
+
+### Notes & trade-offs
+
+- Preserve mode is implemented for `conf` (Prompt 3 gave it surgical
+  `set_option`); Lua and all conversions **regenerate** a single fresh file
+  (comments not preserved). Editing a `$variable`-valued option turns that one
+  line into a literal; untouched lines keep their `$var`.
+- Backups are suffixed with unix-seconds (`.bak`) to avoid a calendar-date dep.
+
 ## [0.7.0] - 2026-06-04
 
 ### Added — editors for the structured collections (`hyprconf-gui`)
@@ -431,7 +482,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/hyprconf/hyprconf/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/hyprconf/hyprconf/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/hyprconf/hyprconf/compare/v0.5.0...v0.5.1

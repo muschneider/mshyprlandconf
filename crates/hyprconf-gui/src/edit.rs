@@ -1060,6 +1060,16 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
+    use crate::load::Origin;
+    use hyprconf_core::{ConfBundle, ConfParser, Config};
+
+    fn synthetic_origin() -> Origin {
+        Origin::Conf(ConfBundle {
+            documents: vec![ConfParser::parse_str("", None)],
+            root: 0,
+        })
+    }
+
     fn loaded() -> (Loaded, &'static Schema) {
         let schema = Schema::shared();
         let config = Config::default_from_schema(schema);
@@ -1078,11 +1088,11 @@ mod tests {
             drafts: HashMap::new(),
             errors: HashMap::new(),
             touched: HashSet::new(),
+            origin: synthetic_origin(),
+            dynamic_regions: 0,
         };
         (loaded, schema)
     }
-
-    use hyprconf_core::Config;
 
     #[test]
     fn collection_add_remove_duplicate_reorder() {
@@ -1182,6 +1192,8 @@ mod tests {
             drafts: HashMap::new(),
             errors: HashMap::new(),
             touched: HashSet::new(),
+            origin: synthetic_origin(),
+            dynamic_regions: 0,
         }
     }
 

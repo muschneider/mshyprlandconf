@@ -13,8 +13,9 @@ use hyprconf_core::structured::{
     WindowRule, WorkspaceRule,
 };
 use hyprconf_core::value::Color as HyprColor;
-use hyprconf_core::Value;
+use hyprconf_core::{ConfigFormat, Severity, Value};
 
+use crate::diff::{self, Tag};
 use crate::edit::{
     env_issue, exec_issue, extra_field, fmt_num, has_mod, keybind_issue, layer_rule_issue,
     monitor_issue, parse_matchers, window_rule_issue, BindFlag, CollectionAction, ColorChannel,
@@ -22,6 +23,7 @@ use crate::edit::{
     WindowRuleEdit, DISPATCHERS, MODS,
 };
 use crate::load::{format_label, LoadState, Loaded};
+use crate::save::{self, SaveMode};
 use crate::{fuzzy, App, Message, Selection};
 
 const SIDEBAR_WIDTH: f32 = 260.0;
@@ -29,6 +31,7 @@ const BOLD: Font = Font {
     weight: iced::font::Weight::Bold,
     ..Font::DEFAULT
 };
+const MONO: Font = Font::MONOSPACE;
 
 /// The whole window: header / [sidebar | content] / status bar.
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -71,6 +74,20 @@ fn header(app: &App) -> Element<'_, Message> {
     let mut bar = row![brand, search].spacing(20).align_y(Alignment::Center);
     if let Some(changes) = changes_indicator(app) {
         bar = bar.push(changes);
+    }
+    if app.load.loaded().is_some() {
+        let active = app.show_save;
+        let style: fn(&Theme, button::Status) -> button::Style = if active {
+            changes_button_style
+        } else {
+            ghost_button
+        };
+        bar = bar.push(
+            button(text("save…").size(13))
+                .padding([6, 12])
+                .on_press(Message::ToggleSave)
+                .style(style),
+        );
     }
     bar = bar.push(theme_picker);
 
@@ -218,7 +235,9 @@ fn content(app: &App) -> Element<'_, Message> {
         LoadState::NotFound { searched } => not_found_view(searched),
         LoadState::Error { path, message } => error_view(&path.display().to_string(), message),
         LoadState::Loaded(loaded) => {
-            if app.show_changes {
+            if app.show_save {
+                save_view(app, loaded)
+            } else if app.show_changes {
                 changes_view(app, loaded)
             } else if app.search.trim().is_empty() {
                 match &app.selected {
@@ -807,6 +826,225 @@ fn changes_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
     }
 
     scroll(items)
+}
+
+// ---------------------------------------------------------------------------
+// save panel
+// ---------------------------------------------------------------------------
+
+fn save_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
+    let target = app.output_format.unwrap_or(loaded.format);
+    let plan = save::plan_save(loaded, target);
+    let problems = save::review(loaded, app.schema);
+    let block_reason = save::blocked(&problems, app.override_warnings);
+
+    let mode_label = match plan.mode {
+        SaveMode::Preserve => "preserve (edit in place)",
+        SaveMode::Regenerate => "regenerate (fresh file)",
+    };
+
+    let subtitle = if loaded.is_multi_file() {
+        format!("Mode: {mode_label}. Spans multiple files — only changed files are written.")
+    } else {
+        format!("Mode: {mode_label}. Review the diff, then write.")
+    };
+    let mut items: Vec<Element<Message>> = vec![pane_header(
+        "💾",
+        "Save".to_string(),
+        subtitle,
+        format!("{} change(s)", plan.changed_files().len()),
+    )];
+
+    // Output format selector.
+    items.push(
+        container(
+            row![
+                text("Output format").size(13).style(muted),
+                format_chip(plan.format, ConfigFormat::Conf, "conf"),
+                format_chip(plan.format, ConfigFormat::Lua, "Lua"),
+                Space::new().width(Length::Fill),
+                text(if plan.format == loaded.format {
+                    String::new()
+                } else {
+                    format!("converting from {}", format_label(loaded.format))
+                })
+                .size(12)
+                .style(muted),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([10, 14])
+        .width(Length::Fill)
+        .style(card_style)
+        .into(),
+    );
+
+    // Dynamic-Lua loss warning.
+    if plan.drops_dynamic > 0 {
+        items.push(
+            container(
+                text(format!(
+                    "⚠ {} dynamic Lua region(s) (loops, functions, …) cannot be represented and will be dropped.",
+                    plan.drops_dynamic
+                ))
+                .size(13)
+                .style(danger),
+            )
+            .padding([10, 14])
+            .width(Length::Fill)
+            .style(card_style)
+            .into(),
+        );
+    }
+
+    // Validation results.
+    items.push(validation_panel(&problems));
+
+    // Override + write controls.
+    let mut controls = row![].spacing(12).align_y(Alignment::Center);
+    if problems.iter().any(|p| p.severity == Severity::Warning) {
+        controls = controls.push(
+            iced::widget::checkbox(app.override_warnings)
+                .label("save anyway (ignore warnings)")
+                .on_toggle(Message::ToggleOverride)
+                .size(16)
+                .text_size(13),
+        );
+    }
+    controls = controls.push(Space::new().width(Length::Fill));
+    if let Some(reason) = &block_reason {
+        controls = controls.push(text(reason.clone()).size(12).style(danger));
+    }
+    let mut write = button(text("⤓ write to disk").size(14))
+        .padding([8, 16])
+        .style(changes_button_style);
+    if block_reason.is_none() && plan.has_changes() {
+        write = write.on_press(Message::PerformSave);
+    }
+    controls = controls.push(write);
+    items.push(
+        container(controls)
+            .padding([6, 14])
+            .width(Length::Fill)
+            .into(),
+    );
+
+    if !plan.has_changes() {
+        items.push(
+            container(
+                text("Nothing to write — the model matches what's on disk.")
+                    .size(13)
+                    .style(muted),
+            )
+            .padding([10, 14])
+            .into(),
+        );
+    }
+
+    // Per-file diff/preview.
+    for file in plan.changed_files() {
+        items.push(file_diff(file));
+    }
+
+    scroll(items)
+}
+
+fn format_chip(
+    active: ConfigFormat,
+    value: ConfigFormat,
+    label: &'static str,
+) -> Element<'static, Message> {
+    chip(
+        label.to_string(),
+        active == value,
+        Message::SetOutputFormat(value),
+    )
+}
+
+fn validation_panel(problems: &[save::Problem]) -> Element<'static, Message> {
+    if problems.is_empty() {
+        return container(text("✓ No problems found.").size(13).style(success))
+            .padding([10, 14])
+            .width(Length::Fill)
+            .style(card_style)
+            .into();
+    }
+
+    let mut rows: Vec<Element<Message>> = vec![text("Validation").size(14).font(BOLD).into()];
+    for problem in problems {
+        let (mark, mark_style): (&str, fn(&Theme) -> text::Style) = match problem.severity {
+            Severity::Error => ("✕", danger),
+            Severity::Warning => ("!", warn_style),
+        };
+        let mut label_btn = button(text(problem.label.clone()).size(13))
+            .padding([2, 6])
+            .style(ghost_button);
+        if let Some(jump) = &problem.jump {
+            label_btn = label_btn.on_press(Message::Selected(jump.clone()));
+        }
+        rows.push(
+            row![
+                text(mark).size(13).style(mark_style),
+                label_btn,
+                text(problem.message.clone()).size(12).style(muted),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+
+    container(Column::with_children(rows).spacing(6))
+        .padding([12, 14])
+        .width(Length::Fill)
+        .style(card_style)
+        .into()
+}
+
+fn file_diff(file: &save::FileWrite) -> Element<'static, Message> {
+    let diff = diff::diff_lines(&file.before, &file.after);
+    let (added, removed) = diff::summary(&diff);
+
+    let header = row![
+        text(file.path.display().to_string()).size(13).font(BOLD),
+        Space::new().width(Length::Fill),
+        text(format!("+{added}")).size(12).style(success),
+        text(format!("-{removed}")).size(12).style(danger),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let mut lines: Vec<Element<Message>> = Vec::new();
+    for d in &diff {
+        let (prefix, style): (&str, fn(&Theme) -> text::Style) = match d.tag {
+            Tag::Insert => ("+", success),
+            Tag::Delete => ("-", danger),
+            Tag::Equal => (" ", muted),
+        };
+        lines.push(
+            text(format!("{prefix} {}", d.text))
+                .size(12)
+                .font(MONO)
+                .style(style)
+                .into(),
+        );
+    }
+
+    container(
+        column![
+            header,
+            container(Column::with_children(lines).spacing(0))
+                .padding([8, 10])
+                .width(Length::Fill)
+                .style(code_style),
+        ]
+        .spacing(8),
+    )
+    .padding([12, 14])
+    .width(Length::Fill)
+    .style(card_style)
+    .into()
 }
 
 /// Collections that have full row editors (others are shown read-only).
@@ -1454,6 +1692,12 @@ fn status_bar(app: &App) -> Element<'_, Message> {
                 );
             }
             segs = segs.push(Space::new().width(Length::Fill));
+            if let Some(status) = &app.save_status {
+                match status {
+                    Ok(msg) => segs = segs.push(text(format!("✓ {msg}")).size(12).style(success)),
+                    Err(msg) => segs = segs.push(text(format!("✕ {msg}")).size(12).style(danger)),
+                }
+            }
             segs = segs.push(
                 text(format!("{} options set", loaded.config.option_count()))
                     .size(12)
@@ -1666,6 +1910,31 @@ fn muted(theme: &Theme) -> text::Style {
 fn danger(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().danger.base.color),
+    }
+}
+
+fn success(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(theme.extended_palette().success.base.color),
+    }
+}
+
+fn warn_style(_theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(Color::from_rgb8(0xe0, 0xa0, 0x30)),
+    }
+}
+
+/// Background for the diff/code block.
+fn code_style(theme: &Theme) -> container::Style {
+    let p = theme.extended_palette();
+    container::Style {
+        background: Some(p.background.weakest.color.into()),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
     }
 }
 

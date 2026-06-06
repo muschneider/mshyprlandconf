@@ -5,9 +5,11 @@
 //! the user browse it through a sidebar of sections/collections, a live
 //! fuzzy-search box, and a status bar. Editing/saving arrive later.
 
+mod diff;
 mod edit;
 mod fuzzy;
 mod load;
+mod save;
 mod view;
 
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ use std::sync::Arc;
 use iced::{Element, Task, Theme};
 
 use hyprconf_core::schema::{CollectionId, Schema};
+use hyprconf_core::ConfigFormat;
 
 use crate::load::LoadState;
 
@@ -129,6 +132,14 @@ pub(crate) enum Message {
     CollectionEdit(edit::CollectionAction),
     /// Toggle the pending-changes (diff) view.
     ToggleChanges,
+    /// Open/close the save panel.
+    ToggleSave,
+    /// Choose the output format in the save panel.
+    SetOutputFormat(ConfigFormat),
+    /// Toggle "save despite warnings".
+    ToggleOverride(bool),
+    /// Write the current plan to disk.
+    PerformSave,
 }
 
 /// Top-level application state.
@@ -140,6 +151,14 @@ pub(crate) struct App {
     pub(crate) selected: Selection,
     pub(crate) search: String,
     pub(crate) show_changes: bool,
+    /// Whether the save panel is open.
+    pub(crate) show_save: bool,
+    /// The chosen output format (defaults to the loaded format).
+    pub(crate) output_format: Option<ConfigFormat>,
+    /// "Save despite soft warnings".
+    pub(crate) override_warnings: bool,
+    /// The last save's status line, if any.
+    pub(crate) save_status: Option<Result<String, String>>,
 }
 
 impl App {
@@ -159,6 +178,10 @@ impl App {
             selected,
             search: String::new(),
             show_changes: false,
+            show_save: false,
+            output_format: None,
+            override_warnings: false,
+            save_status: None,
         };
 
         let task = Task::perform(async move { load::load_config(explicit) }, |state| {
@@ -202,6 +225,7 @@ impl App {
                 self.selected = selection;
                 self.search.clear();
                 self.show_changes = false;
+                self.show_save = false;
             }
             Message::SearchChanged(query) => self.search = query,
             Message::Edit(action) => {
@@ -214,7 +238,73 @@ impl App {
                     loaded.apply_collection(action);
                 }
             }
-            Message::ToggleChanges => self.show_changes = !self.show_changes,
+            Message::ToggleChanges => {
+                self.show_changes = !self.show_changes;
+                if self.show_changes {
+                    self.show_save = false;
+                }
+            }
+            Message::ToggleSave => {
+                self.show_save = !self.show_save;
+                if self.show_save {
+                    self.show_changes = false;
+                    self.save_status = None;
+                    if self.output_format.is_none() {
+                        self.output_format = self.load.loaded().map(|l| l.format);
+                    }
+                }
+            }
+            Message::SetOutputFormat(format) => {
+                self.output_format = Some(format);
+                self.save_status = None;
+            }
+            Message::ToggleOverride(value) => self.override_warnings = value,
+            Message::PerformSave => return self.perform_save(),
+        }
+        Task::none()
+    }
+
+    /// Validate, write the plan, and reload from disk on success.
+    fn perform_save(&mut self) -> Task<Message> {
+        let outcome: Option<(Result<String, String>, Option<PathBuf>)> = match self.load.loaded() {
+            Some(loaded) => {
+                let target = self.output_format.unwrap_or(loaded.format);
+                let problems = save::review(loaded, self.schema);
+                if let Some(reason) = save::blocked(&problems, self.override_warnings) {
+                    Some((Err(reason), None))
+                } else {
+                    let plan = save::plan_save(loaded, target);
+                    match save::perform_save(&plan) {
+                        Ok(reports) => {
+                            let backups = reports.iter().filter(|r| r.backup.is_some()).count();
+                            let summary = format!(
+                                "Saved {} file(s){}",
+                                reports.len(),
+                                if backups > 0 {
+                                    format!(" · {backups} backup(s)")
+                                } else {
+                                    String::new()
+                                }
+                            );
+                            Some((Ok(summary), Some(plan.root)))
+                        }
+                        Err(e) => Some((Err(format!("write failed: {e}")), None)),
+                    }
+                }
+            }
+            None => None,
+        };
+
+        if let Some((status, reload)) = outcome {
+            self.save_status = Some(status);
+            if let Some(root) = reload {
+                self.show_save = false;
+                self.override_warnings = false;
+                self.output_format = None;
+                return Task::perform(async move { load::load_config(Some(root)) }, |state| {
+                    Message::Loaded(Arc::new(state))
+                });
+            }
         }
         Task::none()
     }
