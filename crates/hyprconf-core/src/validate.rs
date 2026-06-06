@@ -66,6 +66,36 @@ pub fn has_errors(problems: &[ConfigProblem]) -> bool {
     problems.iter().any(|p| p.severity == Severity::Error)
 }
 
+/// Options that the *running* Hyprland is too old to support.
+///
+/// For every option that is set and carries a `since` version newer than
+/// `running_version`, returns a [`Severity::Warning`] problem. (Most schema
+/// options have no `since`, so this is empty unless that metadata is present.)
+#[must_use]
+pub fn unsupported_options(
+    schema: &Schema,
+    config: &Config,
+    running_version: &str,
+) -> Vec<ConfigProblem> {
+    let mut problems = Vec::new();
+    for (path, _) in &config.options {
+        let Some(spec) = schema.option(path) else {
+            continue;
+        };
+        let Some(since) = &spec.since else {
+            continue;
+        };
+        if crate::hyprctl::is_newer(since, running_version) == Some(true) {
+            problems.push(ConfigProblem {
+                path: path.clone(),
+                message: format!("requires Hyprland {since}, but {running_version} is running"),
+                severity: Severity::Warning,
+            });
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +136,19 @@ mod tests {
         let schema = Schema::shared();
         let config = Config::default_from_schema(schema);
         assert!(validate_config(schema, &config).is_empty());
+    }
+
+    #[test]
+    fn surfaces_options_newer_than_running_hyprland() {
+        let schema = Schema::shared();
+        let config = Config::default_from_schema(schema);
+
+        // An ancient Hyprland is missing the `since`-tagged options.
+        let old = unsupported_options(schema, &config, "0.41.0");
+        assert!(old.iter().any(|p| p.path == "decoration:rounding_power"));
+        assert!(old.iter().all(|p| p.severity == Severity::Warning));
+
+        // The current Hyprland supports everything in the schema.
+        assert!(unsupported_options(schema, &config, "0.55.2").is_empty());
     }
 }

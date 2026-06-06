@@ -2,13 +2,15 @@
 //! per-field drafts, validation errors and dirty state, and supports
 //! reset-to-default. This is deliberately UI-free so it can be unit-tested.
 
+use std::collections::{HashMap, HashSet};
+
 use hyprconf_core::schema::{CollectionId, NumericRange, OptionSpec, Schema, ValueType};
 use hyprconf_core::structured::{
     Animation, Bezier, EnvVar, Exec, ExecKind, Keybind, KeybindFlags, LayerRule, MonitorRule,
     Submap, Variable, WindowRule, WorkspaceRule,
 };
 use hyprconf_core::value::{Color, Gradient, Vec2};
-use hyprconf_core::{Tracked, Value};
+use hyprconf_core::{Config, Tracked, Value};
 
 use crate::load::Loaded;
 
@@ -1053,6 +1055,115 @@ pub fn exec_issue(exec: &Exec) -> Option<String> {
     None
 }
 
+// ===========================================================================
+// undo/redo snapshots + live-apply / coalescing metadata
+// ===========================================================================
+
+/// A snapshot of the editable state, for undo/redo.
+#[derive(Debug, Clone)]
+pub struct EditSnapshot {
+    config: Config,
+    baseline: HashMap<String, Value>,
+    dirty: HashSet<String>,
+    touched: HashSet<CollectionId>,
+    drafts: HashMap<FieldId, String>,
+    errors: HashMap<FieldId, String>,
+}
+
+impl Loaded {
+    /// Capture the current editable state.
+    #[must_use]
+    pub fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            config: self.config.clone(),
+            baseline: self.baseline.clone(),
+            dirty: self.dirty.clone(),
+            touched: self.touched.clone(),
+            drafts: self.drafts.clone(),
+            errors: self.errors.clone(),
+        }
+    }
+
+    /// Restore a previously-captured state.
+    pub fn restore(&mut self, snapshot: EditSnapshot) {
+        self.config = snapshot.config;
+        self.baseline = snapshot.baseline;
+        self.dirty = snapshot.dirty;
+        self.touched = snapshot.touched;
+        self.drafts = snapshot.drafts;
+        self.errors = snapshot.errors;
+    }
+}
+
+impl EditAction {
+    /// A key that consecutive *continuous* edits (typing, dragging) share, so
+    /// undo coalesces them into one step. Discrete edits return `None`.
+    #[must_use]
+    pub fn coalesce_key(&self) -> Option<String> {
+        match self {
+            EditAction::EditText(path, slot, _) => Some(format!("text:{path}:{slot:?}")),
+            EditAction::SetIntSlider(path, _) | EditAction::SetFloatSlider(path, _) => {
+                Some(format!("slider:{path}"))
+            }
+            EditAction::SetColorChannel(path, ch, _) => Some(format!("color:{path}:{ch:?}")),
+            _ => None,
+        }
+    }
+
+    /// The scalar option path this edit affects (for live `hyprctl keyword`).
+    #[must_use]
+    pub fn option_path(&self) -> Option<&str> {
+        match self {
+            EditAction::SetBool(p, _)
+            | EditAction::SetEnum(p, _)
+            | EditAction::SetIntSlider(p, _)
+            | EditAction::SetFloatSlider(p, _)
+            | EditAction::SetColorChannel(p, _, _)
+            | EditAction::EditText(p, _, _)
+            | EditAction::Reset(p)
+            | EditAction::AddStop(p)
+            | EditAction::RemoveStop(p, _) => Some(p),
+        }
+    }
+}
+
+impl CollectionAction {
+    /// See [`EditAction::coalesce_key`]; structural and toggle edits return `None`.
+    #[must_use]
+    pub fn coalesce_key(&self) -> Option<String> {
+        let text = match self {
+            CollectionAction::Keybind(i, KeybindEdit::Key(_)) => format!("kb:{i}:key"),
+            CollectionAction::Keybind(i, KeybindEdit::Args(_)) => format!("kb:{i}:args"),
+            CollectionAction::Keybind(i, KeybindEdit::Submap(_)) => format!("kb:{i}:submap"),
+            CollectionAction::WindowRule(i, WindowRuleEdit::Rule(_)) => format!("wr:{i}:rule"),
+            CollectionAction::WindowRule(i, WindowRuleEdit::Matchers(_)) => format!("wr:{i}:raw"),
+            CollectionAction::WindowRule(i, WindowRuleEdit::MatchKey(j, _)) => format!("wr:{i}:mk:{j}"),
+            CollectionAction::WindowRule(i, WindowRuleEdit::MatchValue(j, _)) => format!("wr:{i}:mv:{j}"),
+            CollectionAction::LayerRule(i, LayerRuleEdit::Rule(_)) => format!("lr:{i}:rule"),
+            CollectionAction::LayerRule(i, LayerRuleEdit::Namespace(_)) => format!("lr:{i}:ns"),
+            CollectionAction::Monitor(i, edit) => format!("mon:{i}:{}", monitor_field_tag(edit)),
+            CollectionAction::Submap(i, _) => format!("sm:{i}"),
+            CollectionAction::Env(i, EnvEdit::Name(_)) => format!("env:{i}:name"),
+            CollectionAction::Env(i, EnvEdit::Value(_)) => format!("env:{i}:value"),
+            CollectionAction::Exec(i, ExecEdit::Command(_)) => format!("exec:{i}:cmd"),
+            _ => return None,
+        };
+        Some(text)
+    }
+}
+
+fn monitor_field_tag(edit: &MonitorEdit) -> &'static str {
+    match edit {
+        MonitorEdit::Name(_) => "name",
+        MonitorEdit::Mode(_) => "mode",
+        MonitorEdit::Position(_) => "position",
+        MonitorEdit::Scale(_) => "scale",
+        MonitorEdit::Transform(_) => "transform",
+        MonitorEdit::Vrr(_) => "vrr",
+        MonitorEdit::Mirror(_) => "mirror",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,6 +1392,40 @@ mod tests {
             values(&config.monitors),
             "conf monitor\n{conf}"
         );
+    }
+
+    #[test]
+    fn snapshot_restore_reverts_scalar_and_collection_edits() {
+        let (mut l, schema) = loaded();
+        let before = l.snapshot();
+
+        l.apply(EditAction::SetIntSlider("decoration:rounding".into(), 15), schema);
+        l.apply_collection(CollectionAction::Add(CollectionId::Keybinds));
+        l.apply_collection(CollectionAction::Keybind(0, KeybindEdit::Key("Q".into())));
+        let after = l.snapshot();
+        assert_eq!(l.config.get("decoration:rounding"), Some(&Value::Int(15)));
+        assert_eq!(l.config.keybinds.len(), 1);
+
+        // undo
+        l.restore(before);
+        assert_eq!(l.config.get("decoration:rounding"), Some(&Value::Int(0)));
+        assert_eq!(l.config.keybinds.len(), 0);
+
+        // redo
+        l.restore(after);
+        assert_eq!(l.config.get("decoration:rounding"), Some(&Value::Int(15)));
+        assert_eq!(l.config.keybinds[0].value.key, "Q");
+    }
+
+    #[test]
+    fn coalesce_keys_group_typing_but_not_discrete() {
+        assert_eq!(
+            EditAction::EditText("a".into(), Slot::Main, "x".into()).coalesce_key(),
+            EditAction::EditText("a".into(), Slot::Main, "xy".into()).coalesce_key()
+        );
+        assert!(EditAction::SetBool("a".into(), true).coalesce_key().is_none());
+        assert!(CollectionAction::Add(CollectionId::Keybinds).coalesce_key().is_none());
+        assert!(CollectionAction::Keybind(0, KeybindEdit::Args("x".into())).coalesce_key().is_some());
     }
 
     #[test]

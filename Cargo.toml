@@ -23,6 +23,10 @@ indexmap = "2"
 # XDG / platform directories
 directories = "6"
 
+# Settings persistence
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
 # Filesystem
 glob = "0.3"
 

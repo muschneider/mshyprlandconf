@@ -221,10 +221,10 @@ fn general() -> Section {
             b("general:hover_icon_on_border", "Hover icon on border", "Show a resize cursor when hovering a border.", true),
             b("general:allow_tearing", "Allow tearing", "Permit tearing for windows that request it.", false),
             b("general:no_focus_fallback", "No focus fallback", "Do not refocus the last window when the active one closes.", false),
-            b("general:snap:enabled", "Snap enabled", "Snap floating windows to edges.", false),
-            i("general:snap:window_gap", "Snap window gap", "Distance at which floating windows snap to each other.", 10, NumericRange::at_least(0.0)),
-            i("general:snap:monitor_gap", "Snap monitor gap", "Distance at which floating windows snap to monitor edges.", 10, NumericRange::at_least(0.0)),
-            b("general:snap:border_overlap", "Snap border overlap", "Allow snapped borders to overlap.", false),
+            b("general:snap:enabled", "Snap enabled", "Snap floating windows to edges.", false).since("0.42.0"),
+            i("general:snap:window_gap", "Snap window gap", "Distance at which floating windows snap to each other.", 10, NumericRange::at_least(0.0)).since("0.42.0"),
+            i("general:snap:monitor_gap", "Snap monitor gap", "Distance at which floating windows snap to monitor edges.", 10, NumericRange::at_least(0.0)).since("0.42.0"),
+            b("general:snap:border_overlap", "Snap border overlap", "Allow snapped borders to overlap.", false).since("0.42.0"),
         ],
     )
 }
@@ -237,7 +237,7 @@ fn decoration() -> Section {
         "Rounding, opacity, blur and shadow.",
         vec![
             i("decoration:rounding", "Rounding", "Corner rounding radius in layout px.", 0, NumericRange::at_least(0.0)),
-            fl("decoration:rounding_power", "Rounding power", "Squircle-ness of rounded corners.", 2.0, NumericRange::bounded(1.0, 10.0)),
+            fl("decoration:rounding_power", "Rounding power", "Squircle-ness of rounded corners.", 2.0, NumericRange::bounded(1.0, 10.0)).since("0.45.0"),
             fl("decoration:active_opacity", "Active opacity", "Opacity of the focused window.", 1.0, NumericRange::bounded(0.0, 1.0)),
             fl("decoration:inactive_opacity", "Inactive opacity", "Opacity of unfocused windows.", 1.0, NumericRange::bounded(0.0, 1.0)),
             fl("decoration:fullscreen_opacity", "Fullscreen opacity", "Opacity of fullscreen windows.", 1.0, NumericRange::bounded(0.0, 1.0)),
