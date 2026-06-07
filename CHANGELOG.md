@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-07
+
+### Added — live Hyprland, undo/redo, profiles & persistence
+
+- **Core `hyprctl` module** (UI-free wrappers around the CLI, run off the UI
+  thread inside `iced::Task`): `detect()` parses `hyprctl version` into a
+  `HyprlandInfo { version, tag }` (`None` when `hyprctl` is missing or Hyprland
+  isn't running — **degrades gracefully**); `apply_keyword(name, value)` and
+  `reload()` return a typed `HyprctlError`; plus `parse_semver`/`is_newer` for
+  version comparison. Re-exported as `hyprconf_core::{HyprctlError, HyprlandInfo}`.
+- **Core `validate::unsupported_options(schema, config, running_version)`** flags
+  set options whose schema `since` is newer than the running Hyprland (a soft
+  warning). Added real `since` metadata to the schema (`decoration:rounding_power`
+  → 0.45.0; `general:snap:*` → 0.42.0).
+- **GUI live-apply & reload:** when a running Hyprland is detected, the status bar
+  shows a version badge, a **live-apply** toggle and a **⟳ reload** button.
+  With live-apply on, each committed, valid scalar edit is pushed via
+  `hyprctl keyword`; reload triggers `hyprctl reload`. The status bar also warns
+  when set options need a newer Hyprland than is running.
+- **Undo/redo** (`edit.rs` `EditSnapshot` + `Loaded::snapshot`/`restore`): full
+  edit-state snapshots on an undo/redo stack, with **coalescing** so a burst of
+  continuous edits (typing in a field, dragging a slider) collapses into one
+  step while discrete edits (toggles, enum picks, add/remove) are individual.
+  Header **↶/↷** buttons and **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** shortcuts
+  (via an `iced` event subscription); a fresh load clears the history.
+- **Settings persistence (`settings.rs`)** under
+  `$XDG_CONFIG_HOME/hyprconf/settings.toml` (serde + toml): theme, last output
+  format, window size and recent files (deduped, newest-first, capped at 8).
+  Restored on launch (theme, format, window size) and saved on change.
+- **Profiles & recents (`profiles.rs` + a profiles panel):** save the current
+  config as a named profile under `$XDG_DATA_HOME/hyprconf/profiles/<name>.{conf,lua}`,
+  reopen saved profiles or recent files, and **import** a config from an
+  arbitrary path — all reusing the existing load/serialize pipeline.
+- **Responsive layout:** below 860 px the sidebar collapses to an icons-only
+  rail with hover tooltips; it expands again when widened. `Ctrl+S` toggles the
+  save panel.
+
+### Tests
+
+- Core (69, +3 `hyprctl` over 0.8.0's count plus 1 `validate`): version-output
+  parsing, unrecognised output → `None`, semver parse/compare, and
+  `unsupported_options` flags a too-new `since`.
+- GUI (39): `EditSnapshot` round-trips a scalar **and** collection edit through
+  undo/redo; coalescing groups typing but not discrete edits; `Settings`
+  round-trips through TOML, dedupes/caps recents, and tolerates partial files;
+  profile-name sanitisation. Live-apply/reload, the profiles panel, the Hyprland
+  status bar and the collapsed sidebar verified visually with `grim`
+  (Hyprland 0.55.2).
+
+### Notes & trade-offs
+
+- Live-apply is **off by default** and only available when Hyprland is detected;
+  it pushes scalar `keyword`s only (collection edits are applied via Save +
+  reload). Undo/redo does not re-push to Hyprland.
+- Settings use a plain (non-fsync) write since they're non-critical — this keeps
+  frequent saves (e.g. window-resize) cheap.
+- The `since`-mismatch check only warns when an option is newer than the running
+  Hyprland; all curated `since` values are ≤ 0.55.2.
+- No native file dialog: import uses a path field (keeps the build dep-light).
+
 ## [0.8.0] - 2026-06-04
 
 ### Added — saving, format conversion, preview/diff (core + GUI)
@@ -482,7 +542,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/hyprconf/hyprconf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/hyprconf/hyprconf/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/hyprconf/hyprconf/compare/v0.5.1...v0.6.0

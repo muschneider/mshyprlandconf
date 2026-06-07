@@ -1137,8 +1137,12 @@ impl CollectionAction {
             CollectionAction::Keybind(i, KeybindEdit::Submap(_)) => format!("kb:{i}:submap"),
             CollectionAction::WindowRule(i, WindowRuleEdit::Rule(_)) => format!("wr:{i}:rule"),
             CollectionAction::WindowRule(i, WindowRuleEdit::Matchers(_)) => format!("wr:{i}:raw"),
-            CollectionAction::WindowRule(i, WindowRuleEdit::MatchKey(j, _)) => format!("wr:{i}:mk:{j}"),
-            CollectionAction::WindowRule(i, WindowRuleEdit::MatchValue(j, _)) => format!("wr:{i}:mv:{j}"),
+            CollectionAction::WindowRule(i, WindowRuleEdit::MatchKey(j, _)) => {
+                format!("wr:{i}:mk:{j}")
+            }
+            CollectionAction::WindowRule(i, WindowRuleEdit::MatchValue(j, _)) => {
+                format!("wr:{i}:mv:{j}")
+            }
             CollectionAction::LayerRule(i, LayerRuleEdit::Rule(_)) => format!("lr:{i}:rule"),
             CollectionAction::LayerRule(i, LayerRuleEdit::Namespace(_)) => format!("lr:{i}:ns"),
             CollectionAction::Monitor(i, edit) => format!("mon:{i}:{}", monitor_field_tag(edit)),
@@ -1399,7 +1403,10 @@ mod tests {
         let (mut l, schema) = loaded();
         let before = l.snapshot();
 
-        l.apply(EditAction::SetIntSlider("decoration:rounding".into(), 15), schema);
+        l.apply(
+            EditAction::SetIntSlider("decoration:rounding".into(), 15),
+            schema,
+        );
         l.apply_collection(CollectionAction::Add(CollectionId::Keybinds));
         l.apply_collection(CollectionAction::Keybind(0, KeybindEdit::Key("Q".into())));
         let after = l.snapshot();
@@ -1423,9 +1430,15 @@ mod tests {
             EditAction::EditText("a".into(), Slot::Main, "x".into()).coalesce_key(),
             EditAction::EditText("a".into(), Slot::Main, "xy".into()).coalesce_key()
         );
-        assert!(EditAction::SetBool("a".into(), true).coalesce_key().is_none());
-        assert!(CollectionAction::Add(CollectionId::Keybinds).coalesce_key().is_none());
-        assert!(CollectionAction::Keybind(0, KeybindEdit::Args("x".into())).coalesce_key().is_some());
+        assert!(EditAction::SetBool("a".into(), true)
+            .coalesce_key()
+            .is_none());
+        assert!(CollectionAction::Add(CollectionId::Keybinds)
+            .coalesce_key()
+            .is_none());
+        assert!(CollectionAction::Keybind(0, KeybindEdit::Args("x".into()))
+            .coalesce_key()
+            .is_some());
     }
 
     #[test]

@@ -76,18 +76,22 @@ fn header(app: &App) -> Element<'_, Message> {
         bar = bar.push(changes);
     }
     if app.load.loaded().is_some() {
-        let active = app.show_save;
-        let style: fn(&Theme, button::Status) -> button::Style = if active {
-            changes_button_style
-        } else {
-            ghost_button
-        };
-        bar = bar.push(
-            button(text("save…").size(13))
-                .padding([6, 12])
-                .on_press(Message::ToggleSave)
-                .style(style),
-        );
+        bar = bar.push(history_button(
+            "↶",
+            "Undo (Ctrl+Z)",
+            (!app.undo.is_empty()).then_some(Message::Undo),
+        ));
+        bar = bar.push(history_button(
+            "↷",
+            "Redo (Ctrl+Shift+Z)",
+            (!app.redo.is_empty()).then_some(Message::Redo),
+        ));
+        bar = bar.push(toolbar_toggle(
+            "profiles",
+            app.show_profiles,
+            Message::ToggleProfiles,
+        ));
+        bar = bar.push(toolbar_toggle("save…", app.show_save, Message::ToggleSave));
     }
     bar = bar.push(theme_picker);
 
@@ -121,51 +125,104 @@ fn changes_indicator(app: &App) -> Option<Element<'_, Message>> {
     )
 }
 
+/// A small icon button with a tooltip; disabled when `message` is `None`.
+fn history_button(
+    glyph: &'static str,
+    tip: &'static str,
+    message: Option<Message>,
+) -> Element<'static, Message> {
+    let mut b = button(text(glyph).size(15))
+        .padding([6, 11])
+        .style(ghost_button);
+    if let Some(m) = message {
+        b = b.on_press(m);
+    }
+    tooltip(
+        b,
+        container(text(tip).size(12))
+            .padding([6, 10])
+            .style(tooltip_style),
+        tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+/// A header toggle button (accent-tinted while its panel is open).
+fn toolbar_toggle(
+    label: &'static str,
+    active: bool,
+    message: Message,
+) -> Element<'static, Message> {
+    let style: fn(&Theme, button::Status) -> button::Style = if active {
+        changes_button_style
+    } else {
+        ghost_button
+    };
+    button(text(label).size(13))
+        .padding([6, 12])
+        .on_press(message)
+        .style(style)
+        .into()
+}
+
 // ---------------------------------------------------------------------------
 // sidebar
 // ---------------------------------------------------------------------------
 
 fn sidebar(app: &App) -> Element<'_, Message> {
+    let compact = is_compact(app);
+    let active = app.search.trim().is_empty() && !app.show_profiles;
     let mut items: Vec<Element<Message>> = Vec::new();
 
-    items.push(group_header("SECTIONS"));
+    if !compact {
+        items.push(group_header("SECTIONS"));
+    }
     for section in app.schema.sections() {
         let selection = Selection::Section(section.id.clone());
-        let selected = app.selected == selection && app.search.trim().is_empty();
+        let selected = active && app.selected == selection;
         items.push(nav_button(
             section_icon(&section.id),
             section.label.clone(),
             selection,
             selected,
             None,
+            compact,
         ));
     }
 
     items.push(Space::new().height(Length::Fixed(14.0)).into());
-    items.push(group_header("COLLECTIONS"));
+    if !compact {
+        items.push(group_header("COLLECTIONS"));
+    }
     for collection in app.schema.collections() {
         let count = collection_count(app, collection.id);
         let selection = Selection::Collection(collection.id);
-        let selected = app.selected == selection && app.search.trim().is_empty();
+        let selected = active && app.selected == selection;
         items.push(nav_button(
             collection_icon(collection.id),
             collection.label.clone(),
             selection,
             selected,
-            Some(count),
+            (!compact).then_some(count),
+            compact,
         ));
     }
 
     let list = Column::with_children(items)
         .spacing(3)
-        .padding([12, 10])
+        .padding([12, if compact { 6 } else { 10 }])
         .width(Length::Fill);
 
     container(scrollable(list).height(Length::Fill))
-        .width(Length::Fixed(SIDEBAR_WIDTH))
+        .width(Length::Fixed(if compact { 60.0 } else { SIDEBAR_WIDTH }))
         .height(Length::Fill)
         .style(panel_style)
         .into()
+}
+
+/// Below this window width the sidebar collapses to icons-only.
+fn is_compact(app: &App) -> bool {
+    app.settings.window_width < 860.0
 }
 
 fn group_header(label: &str) -> Element<'_, Message> {
@@ -180,7 +237,24 @@ fn nav_button(
     selection: Selection,
     selected: bool,
     badge: Option<usize>,
+    compact: bool,
 ) -> Element<'static, Message> {
+    if compact {
+        let b = button(container(text(icon).size(16)).center_x(Length::Fill))
+            .width(Length::Fill)
+            .padding([8, 0])
+            .on_press(Message::Selected(selection))
+            .style(move |theme: &Theme, status| nav_style(theme, status, selected));
+        return tooltip(
+            b,
+            container(text(label).size(12))
+                .padding([6, 10])
+                .style(tooltip_style),
+            tooltip::Position::Right,
+        )
+        .into();
+    }
+
     let mut inner = row![text(icon).size(15), text(label).size(14)]
         .spacing(10)
         .align_y(Alignment::Center)
@@ -230,6 +304,13 @@ fn collection_count(app: &App, id: CollectionId) -> usize {
 // ---------------------------------------------------------------------------
 
 fn content(app: &App) -> Element<'_, Message> {
+    if app.show_profiles {
+        return container(profiles_view(app))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(20)
+            .into();
+    }
     let inner: Element<Message> = match &app.load {
         LoadState::Loading => centered(text("Loading configuration…").size(16).style(muted)),
         LoadState::NotFound { searched } => not_found_view(searched),
@@ -824,6 +905,138 @@ fn changes_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
                 .into(),
         );
     }
+
+    scroll(items)
+}
+
+// ---------------------------------------------------------------------------
+// profiles & recent files
+// ---------------------------------------------------------------------------
+
+fn profiles_view(app: &App) -> Element<'static, Message> {
+    let mut items: Vec<Element<Message>> = vec![pane_header(
+        "🗂",
+        "Profiles & recents".to_string(),
+        "Save the current config as a named profile, reopen recents, or import any file."
+            .to_string(),
+        String::new(),
+    )];
+
+    // Save-as card (only meaningful with a loaded config).
+    if app.load.loaded().is_some() {
+        let mut save_btn = button(text("save profile").size(13))
+            .padding([6, 12])
+            .style(changes_button_style);
+        if !app.profile_name.trim().is_empty() {
+            save_btn = save_btn.on_press(Message::SaveProfile);
+        }
+        let mut card = column![
+            text("Save current as profile").size(14).font(BOLD),
+            row![
+                text_input("profile name", &app.profile_name)
+                    .on_input(Message::ProfileNameChanged)
+                    .padding([6, 8])
+                    .size(14)
+                    .width(Length::Fill),
+                save_btn,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(8);
+        if let Some(status) = &app.save_status {
+            match status {
+                Ok(msg) => card = card.push(text(format!("✓ {msg}")).size(12).style(success)),
+                Err(msg) => card = card.push(text(format!("✕ {msg}")).size(12).style(danger)),
+            }
+        }
+        items.push(
+            container(card)
+                .padding([12, 16])
+                .width(Length::Fill)
+                .style(card_style)
+                .into(),
+        );
+    }
+
+    // Saved profiles.
+    let mut saved = column![text("Saved profiles").size(14).font(BOLD)].spacing(8);
+    let profiles = crate::profiles::list();
+    if profiles.is_empty() {
+        saved = saved.push(text("No saved profiles yet.").size(12).style(muted));
+    }
+    for profile in profiles {
+        saved = saved.push(
+            row![
+                text(profile.name).size(14).width(Length::Fill),
+                button(text("open").size(12))
+                    .padding([3, 10])
+                    .on_press(Message::OpenPath(profile.path))
+                    .style(ghost_button),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+    items.push(
+        container(saved)
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(card_style)
+            .into(),
+    );
+
+    // Recent files.
+    let mut recents = column![text("Recent files").size(14).font(BOLD)].spacing(6);
+    if app.settings.recent_files.is_empty() {
+        recents = recents.push(text("No recent files.").size(12).style(muted));
+    }
+    for recent in &app.settings.recent_files {
+        recents = recents.push(
+            button(text(recent.clone()).size(13).font(MONO))
+                .width(Length::Fill)
+                .padding([6, 10])
+                .on_press(Message::OpenPath(std::path::PathBuf::from(recent)))
+                .style(result_style),
+        );
+    }
+    items.push(
+        container(recents)
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(card_style)
+            .into(),
+    );
+
+    // Import from an arbitrary path.
+    let trimmed = app.import_path.trim().to_string();
+    let mut import_btn = button(text("load").size(13))
+        .padding([6, 12])
+        .style(ghost_button);
+    if !trimmed.is_empty() {
+        import_btn = import_btn.on_press(Message::OpenPath(std::path::PathBuf::from(trimmed)));
+    }
+    let import = column![
+        text("Import from path").size(14).font(BOLD),
+        row![
+            text_input("/path/to/hyprland.conf or config.lua", &app.import_path)
+                .on_input(Message::ImportPathChanged)
+                .padding([6, 8])
+                .size(14)
+                .width(Length::Fill),
+            import_btn,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(8);
+    items.push(
+        container(import)
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(card_style)
+            .into(),
+    );
 
     scroll(items)
 }
@@ -1692,6 +1905,18 @@ fn status_bar(app: &App) -> Element<'_, Message> {
                 );
             }
             segs = segs.push(Space::new().width(Length::Fill));
+            segs = segs.push(hyprland_status(app));
+            if let Some(info) = &app.hyprland {
+                let stale =
+                    hyprconf_core::unsupported_options(app.schema, &loaded.config, &info.version);
+                if !stale.is_empty() {
+                    segs = segs.push(
+                        text(format!("⚠ {} need newer Hyprland", stale.len()))
+                            .size(12)
+                            .style(warn_style),
+                    );
+                }
+            }
             if let Some(status) = &app.save_status {
                 match status {
                     Ok(msg) => segs = segs.push(text(format!("✓ {msg}")).size(12).style(success)),
@@ -1719,6 +1944,44 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         .padding([6, 16])
         .style(bar_style)
         .into()
+}
+
+/// The Hyprland indicator: version badge + live-apply toggle + reload, or a
+/// muted "not detected" note. Degrades gracefully when `hyprctl` is absent.
+fn hyprland_status(app: &App) -> Element<'_, Message> {
+    let Some(info) = &app.hyprland else {
+        return text("Hyprland: not detected").size(12).style(muted).into();
+    };
+
+    let reload = button(text("⟳ reload").size(12))
+        .padding([2, 8])
+        .on_press(Message::Reload)
+        .style(ghost_button);
+
+    let mut strip = row![
+        container(
+            text(format!("Hyprland {}", info.version))
+                .size(11)
+                .font(BOLD)
+        )
+        .padding([1, 8])
+        .style(format_badge_style),
+        text("live").size(12).style(muted),
+        toggler(app.live_apply)
+            .on_toggle(Message::ToggleLiveApply)
+            .size(16),
+        reload,
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    if let Some(result) = &app.hypr_status {
+        match result {
+            Ok(_) => strip = strip.push(text("✓").size(12).style(success)),
+            Err(_) => strip = strip.push(text("✕").size(12).style(danger)),
+        }
+    }
+    strip.into()
 }
 
 // ---------------------------------------------------------------------------

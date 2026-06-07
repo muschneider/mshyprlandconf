@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/hyprconf-core", "crates/hyprconf-gui"]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ authors = ["hyprconf contributors"]
 
 [workspace.dependencies]
 # Internal crates
-hyprconf-core = { path = "crates/hyprconf-core", version = "0.8.0" }
+hyprconf-core = { path = "crates/hyprconf-core", version = "0.9.0" }
 
 # GUI
 iced = "0.14"

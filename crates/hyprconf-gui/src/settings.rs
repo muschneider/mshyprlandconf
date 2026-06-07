@@ -70,7 +70,8 @@ impl Settings {
 
 /// `$XDG_CONFIG_HOME/hyprconf/settings.toml`.
 fn config_path() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("hyprconf").join("settings.toml"))
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.config_dir().join("hyprconf").join("settings.toml"))
 }
 
 /// `$XDG_DATA_HOME/hyprconf` (for profiles).
@@ -85,10 +86,12 @@ mod tests {
 
     #[test]
     fn round_trips_through_toml() {
-        let mut settings = Settings::default();
-        settings.theme = "Tokyo Night".to_string();
-        settings.last_format = "lua".to_string();
-        settings.window_width = 1300.0;
+        let mut settings = Settings {
+            theme: "Tokyo Night".to_string(),
+            last_format: "lua".to_string(),
+            window_width: 1300.0,
+            ..Settings::default()
+        };
         settings.add_recent("/a/hyprland.conf");
 
         let text = toml::to_string_pretty(&settings).unwrap();
