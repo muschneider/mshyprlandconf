@@ -111,6 +111,57 @@ impl Color {
             self.r, self.g, self.b, self.a
         )
     }
+
+    /// Build a color from HSV (`h` in degrees, `s`/`v` in `0.0..=1.0`) plus an
+    /// explicit alpha. Inputs are wrapped/clamped, so this never fails — handy
+    /// for a visual color picker. Round-trips with [`Color::to_hsv`] for any
+    /// color a picker can produce.
+    #[must_use]
+    pub fn from_hsv(h: f64, s: f64, v: f64, a: u8) -> Self {
+        let h = h.rem_euclid(360.0);
+        let s = s.clamp(0.0, 1.0);
+        let v = v.clamp(0.0, 1.0);
+
+        let c = v * s;
+        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+        let m = v - c;
+        let (r1, g1, b1) = match (h / 60.0) as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        let to_u8 = |f: f64| ((f + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        Self::rgba(to_u8(r1), to_u8(g1), to_u8(b1), a)
+    }
+
+    /// Decompose into HSV: hue in degrees (`0.0..360.0`) and `s`/`v` in
+    /// `0.0..=1.0`. Alpha is ignored. For greys the hue is reported as `0`.
+    #[must_use]
+    pub fn to_hsv(&self) -> (f64, f64, f64) {
+        let r = f64::from(self.r) / 255.0;
+        let g = f64::from(self.g) / 255.0;
+        let b = f64::from(self.b) / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+
+        let hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * ((b - r) / delta + 2.0)
+        } else {
+            60.0 * ((r - g) / delta + 4.0)
+        };
+
+        let saturation = if max == 0.0 { 0.0 } else { delta / max };
+        (hue.rem_euclid(360.0), saturation, max)
+    }
 }
 
 impl fmt::Display for Color {
@@ -383,6 +434,46 @@ mod tests {
         assert!(Color::from_hyprland_str("rgba(123)").is_err());
         assert!(Color::from_hyprland_str("rgb(gg0000)").is_err());
         assert!(Color::from_hyprland_str("0x12345").is_err());
+    }
+
+    #[test]
+    fn hsv_known_conversions() {
+        assert_eq!(Color::from_hsv(0.0, 1.0, 1.0, 255), Color::rgb(255, 0, 0));
+        assert_eq!(Color::from_hsv(120.0, 1.0, 1.0, 255), Color::rgb(0, 255, 0));
+        assert_eq!(Color::from_hsv(240.0, 1.0, 1.0, 255), Color::rgb(0, 0, 255));
+        assert_eq!(
+            Color::from_hsv(0.0, 0.0, 1.0, 255),
+            Color::rgb(255, 255, 255)
+        );
+        assert_eq!(
+            Color::from_hsv(0.0, 0.0, 0.0, 200),
+            Color::rgba(0, 0, 0, 200)
+        );
+        // hue wraps, alpha is carried through.
+        assert_eq!(
+            Color::from_hsv(360.0, 1.0, 1.0, 128),
+            Color::rgba(255, 0, 0, 128)
+        );
+
+        let (h, s, v) = Color::rgb(255, 0, 0).to_hsv();
+        assert!((h - 0.0).abs() < 1e-6 && (s - 1.0).abs() < 1e-6 && (v - 1.0).abs() < 1e-6);
+        let (h, _, _) = Color::rgb(0, 0, 255).to_hsv();
+        assert!((h - 240.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hsv_round_trips_through_picker_space() {
+        // Any color reachable from HSV must survive a to_hsv → from_hsv round trip.
+        for c in [
+            Color::rgb(123, 45, 67),
+            Color::rgb(10, 200, 240),
+            Color::rgb(255, 255, 255),
+            Color::rgb(0, 0, 0),
+            Color::rgb(64, 128, 192),
+        ] {
+            let (h, s, v) = c.to_hsv();
+            assert_eq!(Color::from_hsv(h, s, v, c.a), c, "round trip {c}");
+        }
     }
 
     #[test]

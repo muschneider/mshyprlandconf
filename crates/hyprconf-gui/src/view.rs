@@ -1,8 +1,8 @@
 //! All rendering. Pure functions over `&App` producing Iced elements.
 
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, slider, text, text_input, toggler,
-    tooltip, Column, Space,
+    button, canvas, center, column, container, mouse_area, opaque, pick_list, row, scrollable,
+    slider, stack, text, text_input, toggler, tooltip, Column, Space,
 };
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Theme};
 
@@ -24,7 +24,7 @@ use crate::edit::{
 };
 use crate::load::{format_label, LoadState, Loaded};
 use crate::save::{self, SaveMode};
-use crate::{fuzzy, App, Message, Selection};
+use crate::{color_picker, fuzzy, App, Message, Selection};
 
 const SIDEBAR_WIDTH: f32 = 260.0;
 const BOLD: Font = Font {
@@ -33,12 +33,49 @@ const BOLD: Font = Font {
 };
 const MONO: Font = Font::MONOSPACE;
 
-/// The whole window: header / [sidebar | content] / status bar.
+/// The whole window: header / [sidebar | content] / status bar, with the color
+/// picker floating above as a modal when open.
 pub fn view(app: &App) -> Element<'_, Message> {
-    column![
+    let base: Element<Message> = column![
         header(app),
         row![sidebar(app), content(app)].height(Length::Fill),
         status_bar(app),
+    ]
+    .into();
+
+    match &app.color_picker {
+        Some(draft) => modal(
+            base,
+            color_picker_panel(app, draft),
+            Message::CloseColorPicker,
+        ),
+        None => base,
+    }
+}
+
+/// Float `content` (a dimmed, click-to-dismiss modal) above `base`.
+fn modal<'a>(
+    base: Element<'a, Message>,
+    content: Element<'a, Message>,
+    on_blur: Message,
+) -> Element<'a, Message> {
+    stack![
+        base,
+        opaque(
+            mouse_area(center(opaque(content)).style(|_theme| {
+                container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.7,
+                            ..Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }
+            }))
+            .on_press(on_blur)
+        ),
     ]
     .into()
 }
@@ -636,7 +673,7 @@ fn color_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> 
     let hex_err = loaded.field_error(&path, Slot::Hex).is_some();
 
     let top = row![
-        color_swatch(color, 34.0, 24.0),
+        swatch_button(color, path.clone()),
         text_field(
             &hex_draft,
             &path,
@@ -645,6 +682,7 @@ fn color_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Message> 
             Length::Fixed(190.0),
             "rgba(rrggbbaa)"
         ),
+        pick_button(path.clone()),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -713,8 +751,9 @@ fn gradient_editor(opt: &OptionSpec, loaded: &Loaded) -> Element<'static, Messag
         };
         rows.push(
             row![
-                color_swatch(*stop, 30.0, 22.0),
+                stop_swatch_button(*stop, path.clone(), i),
                 text_field(&draft, &path, Slot::Stop(i), err, Length::Fill, "rgba(...)"),
+                stop_pick_button(path.clone(), i),
                 remove,
             ]
             .spacing(8)
@@ -820,6 +859,208 @@ fn color_swatch(color: HyprColor, w: f32, h: f32) -> Element<'static, Message> {
         ..container::Style::default()
     })
     .into()
+}
+
+/// The color preview swatch, as a button that opens the visual picker.
+fn swatch_button(color: HyprColor, path: String) -> Element<'static, Message> {
+    button(color_swatch(color, 34.0, 24.0))
+        .padding(2.0)
+        .on_press(Message::OpenColorPicker(path))
+        .style(ghost_button)
+        .into()
+}
+
+/// The "open the visual picker" affordance next to a color field.
+fn pick_button(path: String) -> Element<'static, Message> {
+    button(text("🎨 pick").size(12))
+        .padding([4, 10])
+        .on_press(Message::OpenColorPicker(path))
+        .style(ghost_button)
+        .into()
+}
+
+/// A gradient stop's swatch, as a button that opens the visual picker for it.
+fn stop_swatch_button(color: HyprColor, path: String, index: usize) -> Element<'static, Message> {
+    button(color_swatch(color, 30.0, 22.0))
+        .padding(2.0)
+        .on_press(Message::OpenStopColorPicker(path, index))
+        .style(ghost_button)
+        .into()
+}
+
+/// The "open the visual picker" icon for a gradient stop.
+fn stop_pick_button(path: String, index: usize) -> Element<'static, Message> {
+    button(text("🎨").size(12))
+        .padding([4, 8])
+        .on_press(Message::OpenStopColorPicker(path, index))
+        .style(ghost_button)
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// color picker popup
+// ---------------------------------------------------------------------------
+
+/// The floating color-picker panel: a saturation/value square, a hue strip, a
+/// live preview, and synced HEX + R/G/B/A inputs. Every control edits the model
+/// in real time (and live-applies to Hyprland when enabled).
+fn color_picker_panel(app: &App, draft: &color_picker::ColorDraft) -> Element<'static, Message> {
+    let target = draft.target.clone();
+    let path = target.path().to_string();
+    let hex_slot = match &target {
+        color_picker::ColorTarget::Option(_) => Slot::Hex,
+        color_picker::ColorTarget::Stop { index, .. } => Slot::Stop(*index),
+    };
+    let loaded = app.load.loaded();
+
+    let color = loaded
+        .and_then(|l| l.config.get(&path))
+        .and_then(|v| match &target {
+            color_picker::ColorTarget::Option(_) => value_to_color(v),
+            color_picker::ColorTarget::Stop { index, .. } => value_stop(v, *index),
+        })
+        .unwrap_or_else(|| {
+            HyprColor::from_hsv(
+                f64::from(draft.hue),
+                f64::from(draft.sat),
+                f64::from(draft.val),
+                255,
+            )
+        });
+
+    let hex_draft = loaded
+        .and_then(|l| l.draft(&path, hex_slot.clone()))
+        .map(str::to_string)
+        .unwrap_or_else(|| color.to_rgba_string());
+    let hex_err = loaded
+        .map(|l| l.field_error(&path, hex_slot.clone()).is_some())
+        .unwrap_or(false);
+
+    let area = canvas(color_picker::SvSquare {
+        hue: draft.hue,
+        sat: draft.sat,
+        val: draft.val,
+    })
+    .width(Length::Fixed(232.0))
+    .height(Length::Fixed(180.0));
+
+    let hue = canvas(color_picker::HueStrip { hue: draft.hue })
+        .width(Length::Fixed(24.0))
+        .height(Length::Fixed(180.0));
+
+    let fill = Color::from_rgba8(color.r, color.g, color.b, f32::from(color.a) / 255.0);
+    let preview = container(Space::new().width(Length::Fill).height(Length::Fixed(40.0))).style(
+        move |theme: &Theme| container::Style {
+            background: Some(fill.into()),
+            border: Border {
+                color: theme.extended_palette().background.strong.color,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..container::Style::default()
+        },
+    );
+
+    let controls = column![
+        preview,
+        text_field(
+            &hex_draft,
+            &path,
+            hex_slot,
+            hex_err,
+            Length::Fill,
+            "rgba(rrggbbaa)"
+        ),
+        popup_channel_slider(&target, color, ColorChannel::R, "R", color.r),
+        popup_channel_slider(&target, color, ColorChannel::G, "G", color.g),
+        popup_channel_slider(&target, color, ColorChannel::B, "B", color.b),
+        popup_channel_slider(&target, color, ColorChannel::A, "A", color.a),
+    ]
+    .spacing(8)
+    .width(Length::Fixed(230.0));
+
+    let header = row![
+        text("Color picker").size(16).font(BOLD),
+        Space::new().width(Length::Fill),
+        button(text("✕").size(14))
+            .padding([2, 8])
+            .on_press(Message::CloseColorPicker)
+            .style(ghost_button),
+    ]
+    .align_y(Alignment::Center);
+
+    let footer = row![
+        text(path).size(11).font(MONO).style(muted),
+        Space::new().width(Length::Fill),
+        button(text("Done").size(13))
+            .padding([6, 16])
+            .on_press(Message::CloseColorPicker)
+            .style(changes_button_style),
+    ]
+    .align_y(Alignment::Center);
+
+    container(column![header, row![area, hue, controls].spacing(14), footer,].spacing(14))
+        .padding(18)
+        .max_width(540.0)
+        .style(card_style)
+        .into()
+}
+
+/// A color channel slider inside the popup. Unlike the inline `channel_slider`
+/// (which targets a scalar color option), this builds a full-color edit so it
+/// works for both scalar options and gradient stops.
+fn popup_channel_slider(
+    target: &color_picker::ColorTarget,
+    color: HyprColor,
+    channel: ColorChannel,
+    label: &'static str,
+    value: u8,
+) -> Element<'static, Message> {
+    let path = target.path().to_string();
+    let index = match target {
+        color_picker::ColorTarget::Stop { index, .. } => Some(*index),
+        color_picker::ColorTarget::Option(_) => None,
+    };
+    row![
+        text(label).size(12).style(muted).width(Length::Fixed(14.0)),
+        slider(0.0..=255.0, f64::from(value), move |v| {
+            let mut c = color;
+            let v = v.round() as u8;
+            match channel {
+                ColorChannel::R => c.r = v,
+                ColorChannel::G => c.g = v,
+                ColorChannel::B => c.b = v,
+                ColorChannel::A => c.a = v,
+            }
+            let action = match index {
+                Some(i) => EditAction::SetStopColor(path.clone(), i, c),
+                None => EditAction::SetColor(path.clone(), c),
+            };
+            Message::Edit(action)
+        })
+        .step(1.0)
+        .width(Length::Fill),
+        text(value.to_string()).size(12).width(Length::Fixed(32.0)),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Extract a [`HyprColor`] from a [`Value::Color`].
+fn value_to_color(value: &Value) -> Option<HyprColor> {
+    match value {
+        Value::Color(c) => Some(*c),
+        _ => None,
+    }
+}
+
+/// Extract one stop from a [`Value::Gradient`].
+fn value_stop(value: &Value, index: usize) -> Option<HyprColor> {
+    match value {
+        Value::Gradient(g) => g.stops.get(index).copied(),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

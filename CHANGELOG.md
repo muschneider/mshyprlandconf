@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-07
+
+### Added — visual color picker popup
+
+- **`canvas`-based color picker** for every `Color` option: clicking a field's
+  swatch (or its `🎨 pick` button) opens a modal popup with
+  - a draggable **saturation/value square** for the current hue,
+  - a **hue strip** (vertical rainbow),
+  - a live **preview** swatch,
+  - a synced **HEX** field (`rgba(rrggbbaa)`) and **R/G/B/A** sliders.
+  All controls edit the model in **real time**, so when live-apply is on the
+  change is pushed to the running Hyprland via `hyprctl keyword` immediately.
+  The popup is a dimmed, click-away modal (`stack` + `opaque` + `center`),
+  closable via ✕, **Done**, or clicking outside.
+- **Core HSV support:** `Color::from_hsv(h, s, v, a)` and `Color::to_hsv()`
+  (degrees + `0.0..=1.0`), used by the picker. The 2D area and hue strip are
+  drawn with `iced` canvas linear gradients; the picker keeps its HSV state
+  separate from the model so hue/saturation survive value→0 / saturation→0.
+- **`EditAction::SetColor`** sets a whole color at once (from the visual area /
+  hue strip), routed through the same edit pipeline as everything else, so it
+  participates in **undo/redo** (coalesced into one step per pick session),
+  dirty tracking, validation, save and live-apply. The inline HEX field and
+  R/G/B/A sliders stay in sync with the popup (and vice-versa).
+
+### Tests
+
+- Core (73): `from_hsv` known conversions (primaries, white, black, hue wrap,
+  alpha carry-through) and a `to_hsv → from_hsv` round-trip over several colors.
+- GUI (40): `SetColor` commits the value and syncs the HEX draft, and exposes
+  the option path. The popup (SV square, hue strip, preview, HEX + RGBA) was
+  verified visually with `grim`.
+
+### Notes & trade-offs
+
+- The picker reports geometric positions (`PickSatVal` / `PickHue`); the app
+  combines them with the model's current alpha into a color, so dragging value
+  or saturation to an extreme never loses the hue.
+- Enabling the `canvas` feature on `iced` is the only new build surface; no new
+  external crates were added.
+
 ## [0.9.0] - 2026-06-07
 
 ### Added — live Hyprland, undo/redo, profiles & persistence
@@ -542,7 +582,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/hyprconf/hyprconf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/hyprconf/hyprconf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/hyprconf/hyprconf/compare/v0.6.0...v0.7.0

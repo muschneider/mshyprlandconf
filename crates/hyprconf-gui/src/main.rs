@@ -6,6 +6,7 @@
 //! `hyprctl`) for optional live-apply/reload, keeps an undo/redo history, and
 //! persists window/theme/format/recent-file settings between runs.
 
+mod color_picker;
 mod diff;
 mod edit;
 mod fuzzy;
@@ -22,9 +23,11 @@ use iced::{Element, Size, Task, Theme};
 
 use hyprconf_core::hyprctl::HyprlandInfo;
 use hyprconf_core::schema::{CollectionId, Schema};
-use hyprconf_core::ConfigFormat;
+use hyprconf_core::value::Color;
+use hyprconf_core::{ConfigFormat, Value};
 
-use crate::edit::EditSnapshot;
+use crate::color_picker::{ColorDraft, ColorTarget};
+use crate::edit::{EditAction, EditSnapshot};
 use crate::load::{LoadState, Loaded};
 use crate::settings::Settings;
 
@@ -179,6 +182,16 @@ pub(crate) enum Message {
     ImportPathChanged(String),
     /// Open a config from an explicit path (recent / profile / import).
     OpenPath(PathBuf),
+    /// Open the visual color picker for a scalar color option.
+    OpenColorPicker(String),
+    /// Open the visual color picker for a gradient stop (path, stop index).
+    OpenStopColorPicker(String, usize),
+    /// Close the color picker.
+    CloseColorPicker,
+    /// The 2D area reported a new saturation/value.
+    PickSatVal(f32, f32),
+    /// The hue strip reported a new hue (degrees).
+    PickHue(f32),
 }
 
 /// Top-level application state.
@@ -218,6 +231,8 @@ pub(crate) struct App {
     pub(crate) profile_name: String,
     /// The in-progress import path.
     pub(crate) import_path: String,
+    /// The open color picker, if any (live HSV state for one option).
+    pub(crate) color_picker: Option<ColorDraft>,
 }
 
 impl App {
@@ -252,6 +267,7 @@ impl App {
             show_profiles: false,
             profile_name: String::new(),
             import_path: String::new(),
+            color_picker: None,
         };
 
         let load = Task::perform(async move { load::load_config(explicit) }, |state| {
@@ -306,10 +322,11 @@ impl App {
                     LoadState::Loading => {}
                 }
                 self.load = (*state).clone();
-                // A fresh load invalidates the edit history.
+                // A fresh load invalidates the edit history and open picker.
                 self.undo.clear();
                 self.redo.clear();
                 self.last_key = None;
+                self.color_picker = None;
 
                 let recent = match &self.load {
                     LoadState::Loaded(loaded) => Some(loaded.source.display().to_string()),
@@ -326,16 +343,10 @@ impl App {
                 self.show_changes = false;
                 self.show_save = false;
                 self.show_profiles = false;
+                self.color_picker = None;
             }
             Message::SearchChanged(query) => self.search = query,
-            Message::Edit(action) => {
-                self.record(action.coalesce_key());
-                let path = action.option_path().map(str::to_string);
-                if let LoadState::Loaded(loaded) = &mut self.load {
-                    loaded.apply(action, self.schema);
-                }
-                return self.live_apply_task(path);
-            }
+            Message::Edit(action) => return self.apply_edit(action),
             Message::CollectionEdit(action) => {
                 self.record(action.coalesce_key());
                 if let LoadState::Loaded(loaded) = &mut self.load {
@@ -446,6 +457,46 @@ impl App {
                     Message::Loaded(Arc::new(state))
                 });
             }
+            Message::OpenColorPicker(path) => {
+                let target = ColorTarget::Option(path);
+                let color = self.target_color(&target);
+                self.color_picker = Some(ColorDraft::from_color(target, color));
+            }
+            Message::OpenStopColorPicker(path, index) => {
+                let target = ColorTarget::Stop { path, index };
+                let color = self.target_color(&target);
+                self.color_picker = Some(ColorDraft::from_color(target, color));
+            }
+            Message::CloseColorPicker => self.color_picker = None,
+            Message::PickSatVal(sat, val) => {
+                let Some(cp) = self.color_picker.as_mut() else {
+                    return Task::none();
+                };
+                cp.sat = sat;
+                cp.val = val;
+                let (target, hue) = (cp.target.clone(), cp.hue);
+                let color = Color::from_hsv(
+                    f64::from(hue),
+                    f64::from(sat),
+                    f64::from(val),
+                    self.target_alpha(&target),
+                );
+                return self.apply_pick(pick_action(&target, color));
+            }
+            Message::PickHue(hue) => {
+                let Some(cp) = self.color_picker.as_mut() else {
+                    return Task::none();
+                };
+                cp.hue = hue;
+                let (target, sat, val) = (cp.target.clone(), cp.sat, cp.val);
+                let color = Color::from_hsv(
+                    f64::from(hue),
+                    f64::from(sat),
+                    f64::from(val),
+                    self.target_alpha(&target),
+                );
+                return self.apply_pick(pick_action(&target, color));
+            }
         }
         Task::none()
     }
@@ -494,6 +545,95 @@ impl App {
             },
             Message::HyprResult,
         )
+    }
+
+    /// Apply an edit: snapshot for undo, mutate the model, keep an open color
+    /// picker's HSV in sync (for explicit channel/hex edits), then live-apply.
+    /// Apply a *picker* edit (from the 2D area / hue strip): the open picker's
+    /// HSV is already authoritative, so we must NOT re-derive it (that would
+    /// lose hue/saturation at value→0 / saturation→0).
+    fn apply_pick(&mut self, action: EditAction) -> Task<Message> {
+        self.record(action.coalesce_key());
+        let path = action.option_path().map(str::to_string);
+        if let LoadState::Loaded(loaded) = &mut self.load {
+            loaded.apply(action, self.schema);
+        }
+        self.live_apply_task(path)
+    }
+
+    /// Apply any other edit: snapshot for undo, mutate the model, keep an open
+    /// color picker's HSV in sync (so the area/strip track hex & slider edits),
+    /// then live-apply.
+    fn apply_edit(&mut self, action: EditAction) -> Task<Message> {
+        self.record(action.coalesce_key());
+        let path = action.option_path().map(str::to_string);
+        if let LoadState::Loaded(loaded) = &mut self.load {
+            loaded.apply(action, self.schema);
+        }
+        if let Some(path) = &path {
+            self.sync_color_picker(path);
+        }
+        self.live_apply_task(path)
+    }
+
+    /// Re-derive the open picker's HSV from the model after a non-area edit to
+    /// the same target (so the 2D area / hue strip track channel & hex edits).
+    fn sync_color_picker(&mut self, path: &str) {
+        let Some(target) = self.color_picker.as_ref().map(|cp| cp.target.clone()) else {
+            return;
+        };
+        if target.path() != path {
+            return;
+        }
+        let (h, s, v) = self.target_color(&target).to_hsv();
+        if let Some(cp) = self.color_picker.as_mut() {
+            cp.hue = h as f32;
+            cp.sat = s as f32;
+            cp.val = v as f32;
+        }
+    }
+
+    /// The model's current color for a picker target (set value, else schema
+    /// default, else opaque black / white).
+    fn target_color(&self, target: &ColorTarget) -> Color {
+        match target {
+            ColorTarget::Option(path) => self.current_color(path),
+            ColorTarget::Stop { path, index } => self.stop_color(path, *index),
+        }
+    }
+
+    /// The current alpha for a picker target (defaults to fully opaque).
+    fn target_alpha(&self, target: &ColorTarget) -> u8 {
+        self.target_color(target).a
+    }
+
+    /// The model's current color for a scalar color option.
+    fn current_color(&self, path: &str) -> Color {
+        self.load
+            .loaded()
+            .and_then(|l| l.config.get(path))
+            .and_then(value_color)
+            .or_else(|| {
+                self.schema
+                    .option(path)
+                    .map(|o| &o.default)
+                    .and_then(value_color)
+            })
+            .unwrap_or(Color::rgba(0, 0, 0, 255))
+    }
+
+    /// The model's current color for one stop of a gradient option.
+    fn stop_color(&self, path: &str, index: usize) -> Color {
+        let from = |value: &Value| match value {
+            Value::Gradient(g) => g.stops.get(index).copied(),
+            _ => None,
+        };
+        self.load
+            .loaded()
+            .and_then(|l| l.config.get(path))
+            .and_then(from)
+            .or_else(|| self.schema.option(path).map(|o| &o.default).and_then(from))
+            .unwrap_or(Color::rgba(255, 255, 255, 255))
     }
 
     /// Validate, write the plan, and reload from disk on success.
@@ -566,6 +706,22 @@ fn handle_event(
         Key::Character("y") => Some(Message::Redo),
         Key::Character("s") => Some(Message::ToggleSave),
         _ => None,
+    }
+}
+
+/// Extract a [`Color`] from a [`Value`], if it is one.
+fn value_color(value: &Value) -> Option<Color> {
+    match value {
+        Value::Color(c) => Some(*c),
+        _ => None,
+    }
+}
+
+/// The edit that applies `color` to a picker target.
+fn pick_action(target: &ColorTarget, color: Color) -> EditAction {
+    match target {
+        ColorTarget::Option(path) => EditAction::SetColor(path.clone(), color),
+        ColorTarget::Stop { path, index } => EditAction::SetStopColor(path.clone(), *index, color),
     }
 }
 

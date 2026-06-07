@@ -75,6 +75,10 @@ pub enum EditAction {
     SetFloatSlider(String, f64),
     /// Move a color channel slider.
     SetColorChannel(String, ColorChannel, u8),
+    /// Set a whole color at once (from the visual picker's 2D area / hue strip).
+    SetColor(String, Color),
+    /// Set one gradient stop's color (from the visual picker).
+    SetStopColor(String, usize, Color),
     /// Type into a text-based field (path, slot, raw text).
     EditText(String, Slot, String),
     /// Append a gradient color stop.
@@ -158,6 +162,13 @@ impl Loaded {
             }
             EditAction::SetColorChannel(path, ch, v) => {
                 self.set_color_channel(&path, ch, v, schema)
+            }
+            EditAction::SetColor(path, color) => {
+                self.commit(&path, Value::Color(color));
+                self.set_draft(&path, Slot::Hex, color.to_rgba_string());
+            }
+            EditAction::SetStopColor(path, index, color) => {
+                self.set_stop_color(&path, index, color, schema)
             }
             EditAction::EditText(path, slot, text) => self.edit_text(&path, slot, text, schema),
             EditAction::AddStop(path) => self.add_stop(&path, schema),
@@ -331,6 +342,19 @@ impl Loaded {
         }
         self.commit(path, Value::Color(color));
         self.set_draft(path, Slot::Hex, color.to_rgba_string());
+    }
+
+    /// Set one gradient stop's color outright (from the visual picker), syncing
+    /// that stop's hex draft.
+    fn set_stop_color(&mut self, path: &str, index: usize, color: Color, schema: &Schema) {
+        let mut gradient = self.current_gradient(path, schema);
+        let Some(stop) = gradient.stops.get_mut(index) else {
+            return;
+        };
+        *stop = color;
+        self.clear_error(path, Slot::Stop(index));
+        self.set_draft(path, Slot::Stop(index), color.to_rgba_string());
+        self.commit(path, Value::Gradient(gradient));
     }
 
     fn add_stop(&mut self, path: &str, schema: &Schema) {
@@ -1106,6 +1130,8 @@ impl EditAction {
                 Some(format!("slider:{path}"))
             }
             EditAction::SetColorChannel(path, ch, _) => Some(format!("color:{path}:{ch:?}")),
+            EditAction::SetColor(path, _) => Some(format!("colorpick:{path}")),
+            EditAction::SetStopColor(path, index, _) => Some(format!("colorpick:{path}:{index}")),
             _ => None,
         }
     }
@@ -1119,6 +1145,8 @@ impl EditAction {
             | EditAction::SetIntSlider(p, _)
             | EditAction::SetFloatSlider(p, _)
             | EditAction::SetColorChannel(p, _, _)
+            | EditAction::SetColor(p, _)
+            | EditAction::SetStopColor(p, _, _)
             | EditAction::EditText(p, _, _)
             | EditAction::Reset(p)
             | EditAction::AddStop(p)
@@ -1549,6 +1577,34 @@ mod tests {
         );
         assert!(l.field_error(path, Slot::Hex).is_some());
         assert_eq!(l.config.get(path).cloned(), before);
+    }
+
+    #[test]
+    fn set_color_commits_value_and_syncs_hex_draft() {
+        let (mut l, schema) = loaded();
+        let path = "decoration:shadow:color";
+        let picked = Color::rgba(0x33, 0x66, 0x99, 0xcc);
+        l.apply(EditAction::SetColor(path.into(), picked), schema);
+        assert_eq!(l.config.get(path), Some(&Value::Color(picked)));
+        // the hex field reflects the picked color so text editors stay in sync
+        assert_eq!(l.draft(path, Slot::Hex), Some("rgba(336699cc)"));
+        assert_eq!(
+            EditAction::SetColor(path.into(), picked).option_path(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn set_stop_color_updates_gradient_stop_and_syncs_draft() {
+        let (mut l, schema) = loaded();
+        let path = "general:col.active_border";
+        let picked = Color::rgba(0x11, 0x22, 0x33, 0xff);
+        l.apply(EditAction::SetStopColor(path.into(), 0, picked), schema);
+        match l.config.get(path) {
+            Some(Value::Gradient(g)) => assert_eq!(g.stops[0], picked),
+            other => panic!("expected gradient, got {other:?}"),
+        }
+        assert_eq!(l.draft(path, Slot::Stop(0)), Some("rgba(112233ff)"));
     }
 
     #[test]
