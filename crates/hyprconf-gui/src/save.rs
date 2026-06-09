@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Save planning: turn the edited model into the exact bytes to write, choosing
 //! between *preserving* the original document (same-format conf, scalar-only
 //! edits — keeps comments and writes back only changed files) and *regenerating*
@@ -13,6 +14,7 @@ use hyprconf_core::{
     fs as core_fs, validate_config, ConfigFormat, LuaSerializer, SaveReport, Schema, Severity,
 };
 
+use crate::diff::{self, DiffLine};
 use crate::edit::{
     env_issue, exec_issue, keybind_issue, layer_rule_issue, monitor_issue, window_rule_issue,
 };
@@ -184,6 +186,64 @@ impl SavePlan {
     #[must_use]
     pub fn has_changes(&self) -> bool {
         self.files.iter().any(FileWrite::changed)
+    }
+}
+
+/// A precomputed before/after line diff for one changed file.
+///
+/// Computing this is `O(n·m)` (LCS), so it is built once in [`build_preview`]
+/// rather than on every frame inside `view`.
+#[derive(Debug, Clone)]
+pub struct FileDiff {
+    /// The file the diff is for.
+    pub path: PathBuf,
+    /// Number of added lines.
+    pub added: usize,
+    /// Number of removed lines.
+    pub removed: usize,
+    /// The diffed lines.
+    pub lines: Vec<DiffLine>,
+}
+
+/// Everything the save panel needs to render, computed up front (off the render
+/// path): the plan, validation results, and per-file diffs.
+///
+/// This is built in `update` (when the panel opens, the format changes, or the
+/// model is undone/redone) and cached on the app, so `view` stays cheap and does
+/// no filesystem I/O, serialization, or diffing.
+#[derive(Debug, Clone)]
+pub struct SavePreview {
+    /// The computed write plan.
+    pub plan: SavePlan,
+    /// Validation findings (errors block, warnings overridable).
+    pub problems: Vec<Problem>,
+    /// One entry per changed file, already diffed.
+    pub diffs: Vec<FileDiff>,
+}
+
+/// Compute the full [`SavePreview`] for the current model and target format.
+#[must_use]
+pub fn build_preview(loaded: &Loaded, target: ConfigFormat, schema: &Schema) -> SavePreview {
+    let plan = plan_save(loaded, target);
+    let problems = review(loaded, schema);
+    let diffs = plan
+        .changed_files()
+        .into_iter()
+        .map(|file| {
+            let lines = diff::diff_lines(&file.before, &file.after);
+            let (added, removed) = diff::summary(&lines);
+            FileDiff {
+                path: file.path.clone(),
+                added,
+                removed,
+                lines,
+            }
+        })
+        .collect();
+    SavePreview {
+        plan,
+        problems,
+        diffs,
     }
 }
 

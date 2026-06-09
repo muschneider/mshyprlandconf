@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Thin, UI-free wrappers around the `hyprctl` CLI.
 //!
 //! These run the external binary with [`std::process::Command`]; the GUI invokes

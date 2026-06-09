@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Scalar configuration values and their Hyprland textual representations.
 //!
 //! These types are deliberately *format-agnostic*: a [`Color`] knows how to

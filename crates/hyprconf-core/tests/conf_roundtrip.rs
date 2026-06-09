@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for the `.conf` parser/serializer/mapper.
 //!
 //! Covers byte-for-byte round-trips, surgical single-value edits, multi-file

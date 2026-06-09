@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Parsing of `.lua` text into a lossless [`LuaDocument`], plus `require()`
 //! include resolution with cycle/missing-file detection.
 

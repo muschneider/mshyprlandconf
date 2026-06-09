@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whole-model validation of a [`Config`] against the [`Schema`].
 //!
 //! Returns every problem found (not just the first), each tagged with a

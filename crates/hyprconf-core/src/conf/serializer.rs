@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Serialization of a [`ConfDocument`] back to hyprlang text, and rendering of
 //! typed [`Value`]s into their `.conf` textual form.
 //!

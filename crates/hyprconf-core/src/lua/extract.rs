@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Low-level helpers that lower the relevant slice of a `full_moon` AST into a
 //! small, full_moon-independent intermediate ([`LuaVal`]).
 //!

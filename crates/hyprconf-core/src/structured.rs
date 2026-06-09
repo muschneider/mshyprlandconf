@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Structured, repeatable configuration constructs.
 //!
 //! Unlike scalar [`crate::value::Value`]s — which are keyed by a single dotted

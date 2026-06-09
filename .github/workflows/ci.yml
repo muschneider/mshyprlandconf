@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 # Cancel superseded runs on the same ref to save CI minutes.
@@ -44,5 +43,8 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (incl. headless UI tests)
         run: cargo test --workspace
+
+      - name: Build (locked — Cargo.lock must be current)
+        run: cargo build --workspace --locked

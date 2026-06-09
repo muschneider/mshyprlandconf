@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! All rendering. Pure functions over `&App` producing Iced elements.
 
 use iced::widget::{
     button, canvas, center, column, container, mouse_area, opaque, pick_list, row, scrollable,
     slider, stack, text, text_input, toggler, tooltip, Column, Space,
 };
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Theme};
+use iced::{Alignment, Border, Color, Element, Font, Length, Theme};
 
 use hyprconf_core::conf::value_to_conf;
 use hyprconf_core::schema::{CollectionId, OptionSpec, ValueType};
@@ -15,7 +16,7 @@ use hyprconf_core::structured::{
 use hyprconf_core::value::Color as HyprColor;
 use hyprconf_core::{ConfigFormat, Severity, Value};
 
-use crate::diff::{self, Tag};
+use crate::diff::Tag;
 use crate::edit::{
     env_issue, exec_issue, extra_field, fmt_num, has_mod, keybind_issue, layer_rule_issue,
     monitor_issue, parse_matchers, window_rule_issue, BindFlag, CollectionAction, ColorChannel,
@@ -25,6 +26,9 @@ use crate::edit::{
 use crate::load::{format_label, LoadState, Loaded};
 use crate::save::{self, SaveMode};
 use crate::{color_picker, fuzzy, App, Message, Selection};
+
+mod styles;
+use styles::*;
 
 const SIDEBAR_WIDTH: f32 = 260.0;
 const BOLD: Font = Font {
@@ -354,7 +358,12 @@ fn content(app: &App) -> Element<'_, Message> {
         LoadState::Error { path, message } => error_view(&path.display().to_string(), message),
         LoadState::Loaded(loaded) => {
             if app.show_save {
-                save_view(app, loaded)
+                // The preview is precomputed in `update`; `None` only if a
+                // refresh was somehow missed, so degrade gracefully.
+                match &app.save_preview {
+                    Some(preview) => save_view(app, loaded, preview),
+                    None => centered(text("Preparing save preview…").size(16).style(muted)),
+                }
             } else if app.show_changes {
                 changes_view(app, loaded)
             } else if app.search.trim().is_empty() {
@@ -1286,11 +1295,10 @@ fn profiles_view(app: &App) -> Element<'static, Message> {
 // save panel
 // ---------------------------------------------------------------------------
 
-fn save_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
-    let target = app.output_format.unwrap_or(loaded.format);
-    let plan = save::plan_save(loaded, target);
-    let problems = save::review(loaded, app.schema);
-    let block_reason = save::blocked(&problems, app.override_warnings);
+fn save_view(app: &App, loaded: &Loaded, preview: &save::SavePreview) -> Element<'static, Message> {
+    let plan = &preview.plan;
+    let problems = &preview.problems;
+    let block_reason = save::blocked(problems, app.override_warnings);
 
     let mode_label = match plan.mode {
         SaveMode::Preserve => "preserve (edit in place)",
@@ -1353,7 +1361,7 @@ fn save_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
     }
 
     // Validation results.
-    items.push(validation_panel(&problems));
+    items.push(validation_panel(problems));
 
     // Override + write controls.
     let mut controls = row![].spacing(12).align_y(Alignment::Center);
@@ -1396,9 +1404,9 @@ fn save_view(app: &App, loaded: &Loaded) -> Element<'static, Message> {
         );
     }
 
-    // Per-file diff/preview.
-    for file in plan.changed_files() {
-        items.push(file_diff(file));
+    // Per-file diff/preview (precomputed in `update`, not here).
+    for file_diff_data in &preview.diffs {
+        items.push(file_diff(file_diff_data));
     }
 
     scroll(items)
@@ -1456,21 +1464,18 @@ fn validation_panel(problems: &[save::Problem]) -> Element<'static, Message> {
         .into()
 }
 
-fn file_diff(file: &save::FileWrite) -> Element<'static, Message> {
-    let diff = diff::diff_lines(&file.before, &file.after);
-    let (added, removed) = diff::summary(&diff);
-
+fn file_diff(file: &save::FileDiff) -> Element<'static, Message> {
     let header = row![
         text(file.path.display().to_string()).size(13).font(BOLD),
         Space::new().width(Length::Fill),
-        text(format!("+{added}")).size(12).style(success),
-        text(format!("-{removed}")).size(12).style(danger),
+        text(format!("+{}", file.added)).size(12).style(success),
+        text(format!("-{}", file.removed)).size(12).style(danger),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
 
     let mut lines: Vec<Element<Message>> = Vec::new();
-    for d in &diff {
+    for d in &file.lines {
         let (prefix, style): (&str, fn(&Theme) -> text::Style) = match d.tag {
             Tag::Insert => ("+", success),
             Tag::Delete => ("-", danger),
@@ -2393,247 +2398,4 @@ fn collection_icon(id: CollectionId) -> &'static str {
         CollectionId::Beziers => "〰",
         CollectionId::Animations => "🎞",
     }
-}
-
-// ---------------------------------------------------------------------------
-// theme-aware styles
-// ---------------------------------------------------------------------------
-
-fn accent(theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(theme.extended_palette().primary.base.color),
-    }
-}
-
-fn muted(theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(theme.palette().text.scale_alpha(0.6)),
-    }
-}
-
-fn danger(theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(theme.extended_palette().danger.base.color),
-    }
-}
-
-fn success(theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(theme.extended_palette().success.base.color),
-    }
-}
-
-fn warn_style(_theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(Color::from_rgb8(0xe0, 0xa0, 0x30)),
-    }
-}
-
-/// Background for the diff/code block.
-fn code_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.weakest.color.into()),
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Header & status bars: a panel-tinted strip.
-fn bar_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.weak.color.into()),
-        ..container::Style::default()
-    }
-}
-
-/// Sidebar panel.
-fn panel_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.weak.color.into()),
-        ..container::Style::default()
-    }
-}
-
-/// A raised card on the base background.
-fn card_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.weak.color.into()),
-        border: Border {
-            color: p.background.strong.color.scale_alpha(0.5),
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Small count/tag badge.
-fn badge_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.strong.color.into()),
-        text_color: Some(p.background.strong.text),
-        border: Border {
-            radius: 8.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// The format badge in the status bar (accent-tinted).
-fn format_badge_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.primary.base.color.into()),
-        text_color: Some(p.primary.base.text),
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Sidebar nav button: accent fill when selected, subtle hover otherwise.
-fn nav_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
-    let p = theme.extended_palette();
-    let (background, text_color) = if selected {
-        (Some(p.primary.base.color.into()), p.primary.base.text)
-    } else {
-        match status {
-            button::Status::Hovered | button::Status::Pressed => (
-                Some(p.background.strong.color.scale_alpha(0.5).into()),
-                p.background.base.text,
-            ),
-            _ => (None, p.background.base.text),
-        }
-    };
-    button::Style {
-        background,
-        text_color,
-        border: Border {
-            radius: 7.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// Search-result row: invisible until hovered.
-fn result_style(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => {
-            Some(Background::from(p.background.weak.color))
-        }
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: p.background.base.text,
-        border: Border {
-            radius: 8.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// A subtle, borderless button (reset/remove/add controls).
-fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
-    let (background, alpha) = match status {
-        button::Status::Hovered | button::Status::Pressed => (
-            Some(p.background.strong.color.scale_alpha(0.5).into()),
-            0.95,
-        ),
-        button::Status::Disabled => (None, 0.35),
-        button::Status::Active => (None, 0.8),
-    };
-    button::Style {
-        background,
-        text_color: p.background.base.text.scale_alpha(alpha),
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// A small toggle chip (modifiers, bind flags, v2): accent when active.
-fn chip_style(theme: &Theme, status: button::Status, active: bool) -> button::Style {
-    let p = theme.extended_palette();
-    let (background, text_color) = if active {
-        (Some(p.primary.base.color.into()), p.primary.base.text)
-    } else {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let color = if hovered {
-            p.background.strong.color
-        } else {
-            p.background.weak.color
-        };
-        (Some(color.into()), p.background.base.text.scale_alpha(0.85))
-    };
-    button::Style {
-        background,
-        text_color,
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// The "N unsaved" indicator pill (accent-tinted).
-fn changes_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
-    let base = p.primary.base.color;
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => base,
-        _ => base.scale_alpha(0.85),
-    };
-    button::Style {
-        background: Some(background.into()),
-        text_color: p.primary.base.text,
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// The floating tooltip box.
-fn tooltip_style(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
-    container::Style {
-        background: Some(p.background.strong.color.into()),
-        text_color: Some(p.background.strong.text),
-        border: Border {
-            color: p.background.stronger.color,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// A text input that flags validation errors with a danger-colored border.
-fn input_style(theme: &Theme, status: text_input::Status, has_error: bool) -> text_input::Style {
-    let mut style = text_input::default(theme, status);
-    if has_error {
-        style.border.color = theme.extended_palette().danger.base.color;
-        style.border.width = 1.5;
-    }
-    style
 }

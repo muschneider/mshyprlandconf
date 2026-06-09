@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Hyprland Lua format (the `hl` global API), the modern default since 0.55.
 //!
 //! ## Reading strategy

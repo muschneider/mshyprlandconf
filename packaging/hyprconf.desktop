@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=hyprconf
+GenericName=Hyprland Configuration Editor
+Comment=View and edit the full surface of Hyprland configuration (Lua & conf)
+Exec=hyprconf
+Terminal=false
+Categories=Settings;Utility;DesktopSettings;
+Keywords=hyprland;wayland;config;configuration;
+StartupNotify=true

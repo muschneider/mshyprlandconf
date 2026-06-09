@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Emits idiomatic Lua against the `hl` API from a [`Config`], and re-serializes
 //! a parsed [`LuaDocument`] losslessly.
 //!

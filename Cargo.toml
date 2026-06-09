@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/hyprconf-core", "crates/hyprconf-gui"]
 
 [workspace.package]
-version = "0.10.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ authors = ["hyprconf contributors"]
 
 [workspace.dependencies]
 # Internal crates
-hyprconf-core = { path = "crates/hyprconf-core", version = "0.10.0" }
+hyprconf-core = { path = "crates/hyprconf-core", version = "1.0.0" }
 
 # GUI (canvas: the 2D color-picker area + hue strip)
 iced = { version = "0.14", features = ["canvas"] }
@@ -50,7 +50,13 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 all = "warn"
 
-# Keep release builds lean; we will tune this further when we ship binaries.
+# Reproducible, lean release builds for shipped binaries: full LTO and a single
+# codegen unit (more deterministic output, smaller/faster binary), symbols
+# stripped. For byte-for-byte reproducibility also set SOURCE_DATE_EPOCH and
+# `RUSTFLAGS=--remap-path-prefix=$PWD=.` in the release environment.
 [profile.release]
-lto = "thin"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
 strip = true
+panic = "unwind"

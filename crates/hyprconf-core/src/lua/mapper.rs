@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Builds the semantic [`Config`] from a parsed `.lua` document/bundle by
 //! walking the declarative subset of the AST.
 //!

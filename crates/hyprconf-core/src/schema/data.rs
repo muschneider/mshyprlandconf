@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The embedded Hyprland option data, expressed as compact `const` builders.
 //!
 //! # Provenance
@@ -25,8 +26,8 @@ use crate::value::{Color, Gradient, Value, Vec2};
 
 /// Build the full embedded schema.
 pub(super) fn build() -> Schema {
-    Schema {
-        sections: vec![
+    Schema::from_parts(
+        vec![
             general(),
             decoration(),
             animations(),
@@ -42,8 +43,8 @@ pub(super) fn build() -> Schema {
             render(),
             debug(),
         ],
-        collections: collections(),
-    }
+        collections(),
+    )
 }
 
 // ---------------------------------------------------------------------------

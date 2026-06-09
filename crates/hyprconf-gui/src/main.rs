@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `hyprconf-gui` — the Iced desktop front-end for hyprconf.
 //!
 //! This step wires `hyprconf-core` into the UI: on launch it locates and parses
@@ -16,8 +17,13 @@ mod save;
 mod settings;
 mod view;
 
+#[cfg(test)]
+mod ui_tests;
+
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use iced::{Element, Size, Task, Theme};
 
@@ -170,7 +176,7 @@ pub(crate) enum Message {
     Reload,
     /// The result of a `hyprctl` invocation (apply/reload).
     HyprResult(Result<String, String>),
-    /// The window was resized (persisted for next launch).
+    /// The window was resized (persisted for next launch, throttled).
     WindowResized(f32, f32),
     /// Open/close the profiles & recent-files panel.
     ToggleProfiles,
@@ -212,9 +218,9 @@ pub(crate) struct App {
     /// The last save's status line, if any.
     pub(crate) save_status: Option<Result<String, String>>,
     /// Undo history (newest last).
-    pub(crate) undo: Vec<EditSnapshot>,
+    pub(crate) undo: VecDeque<EditSnapshot>,
     /// Redo history (newest last).
-    pub(crate) redo: Vec<EditSnapshot>,
+    pub(crate) redo: VecDeque<EditSnapshot>,
     /// The coalescing key of the last continuous edit, if any.
     pub(crate) last_key: Option<String>,
     /// A detected running Hyprland, if any.
@@ -233,6 +239,12 @@ pub(crate) struct App {
     pub(crate) import_path: String,
     /// The open color picker, if any (live HSV state for one option).
     pub(crate) color_picker: Option<ColorDraft>,
+    /// The save panel's precomputed plan/validation/diffs. Built in `update`
+    /// (never in `view`) whenever the panel is open and its inputs change.
+    pub(crate) save_preview: Option<save::SavePreview>,
+    /// When the window size was last written to disk, to throttle the otherwise
+    /// per-event writes during a continuous drag-resize. `None` until first set.
+    pub(crate) last_window_persist: Option<Instant>,
 }
 
 impl App {
@@ -257,8 +269,8 @@ impl App {
             output_format: Some(format_from_name(&settings.last_format)),
             override_warnings: false,
             save_status: None,
-            undo: Vec::new(),
-            redo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
             last_key: None,
             hyprland: None,
             live_apply: false,
@@ -268,6 +280,8 @@ impl App {
             profile_name: String::new(),
             import_path: String::new(),
             color_picker: None,
+            save_preview: None,
+            last_window_persist: None,
         };
 
         let load = Task::perform(async move { load::load_config(explicit) }, |state| {
@@ -321,7 +335,9 @@ impl App {
                     }
                     LoadState::Loading => {}
                 }
-                self.load = (*state).clone();
+                // The message holds the only `Arc`, so unwrap it to take the
+                // `LoadState` (incl. the parsed `ConfBundle`) without deep-cloning.
+                self.load = Arc::try_unwrap(state).unwrap_or_else(|arc| (*arc).clone());
                 // A fresh load invalidates the edit history and open picker.
                 self.undo.clear();
                 self.redo.clear();
@@ -336,6 +352,7 @@ impl App {
                     self.settings.add_recent(&source);
                     self.settings.save();
                 }
+                self.refresh_save_preview();
             }
             Message::Selected(selection) => {
                 self.selected = selection;
@@ -355,29 +372,31 @@ impl App {
             }
             Message::Undo => {
                 self.last_key = None;
-                let Some(prev) = self.undo.pop() else {
+                let Some(prev) = self.undo.pop_back() else {
                     return Task::none();
                 };
                 if let LoadState::Loaded(loaded) = &mut self.load {
                     let current = loaded.snapshot();
                     loaded.restore(prev);
-                    self.redo.push(current);
+                    self.redo.push_back(current);
                 } else {
-                    self.undo.push(prev);
+                    self.undo.push_back(prev);
                 }
+                self.refresh_save_preview();
             }
             Message::Redo => {
                 self.last_key = None;
-                let Some(next) = self.redo.pop() else {
+                let Some(next) = self.redo.pop_back() else {
                     return Task::none();
                 };
                 if let LoadState::Loaded(loaded) = &mut self.load {
                     let current = loaded.snapshot();
                     loaded.restore(next);
-                    self.undo.push(current);
+                    self.undo.push_back(current);
                 } else {
-                    self.redo.push(next);
+                    self.redo.push_back(next);
                 }
+                self.refresh_save_preview();
             }
             Message::ToggleChanges => {
                 self.show_changes = !self.show_changes;
@@ -396,12 +415,14 @@ impl App {
                         self.output_format = self.load.loaded().map(|l| l.format);
                     }
                 }
+                self.refresh_save_preview();
             }
             Message::SetOutputFormat(format) => {
                 self.output_format = Some(format);
                 self.save_status = None;
                 self.settings.last_format = format_to_name(format).to_string();
                 self.settings.save();
+                self.refresh_save_preview();
             }
             Message::ToggleOverride(value) => self.override_warnings = value,
             Message::PerformSave => return self.perform_save(),
@@ -431,7 +452,17 @@ impl App {
             Message::WindowResized(width, height) => {
                 self.settings.window_width = width;
                 self.settings.window_height = height;
-                self.settings.save();
+                // Throttle disk writes to ~2/sec so a continuous drag-resize
+                // doesn't write settings.toml on every event. The first resize
+                // persists immediately; the exact final size is also captured by
+                // any later `settings.save()` (theme/format/recents).
+                let due = self
+                    .last_window_persist
+                    .is_none_or(|t| t.elapsed() >= Duration::from_millis(400));
+                if due {
+                    self.settings.save();
+                    self.last_window_persist = Some(Instant::now());
+                }
             }
             Message::ToggleProfiles => {
                 self.show_profiles = !self.show_profiles;
@@ -511,11 +542,11 @@ impl App {
         }
         let snapshot = self.load.loaded().map(Loaded::snapshot);
         if let Some(snapshot) = snapshot {
-            self.undo.push(snapshot);
+            self.undo.push_back(snapshot);
             self.redo.clear();
             const MAX_UNDO: usize = 200;
             if self.undo.len() > MAX_UNDO {
-                self.undo.remove(0);
+                self.undo.pop_front();
             }
         }
     }
@@ -547,31 +578,32 @@ impl App {
         )
     }
 
-    /// Apply an edit: snapshot for undo, mutate the model, keep an open color
-    /// picker's HSV in sync (for explicit channel/hex edits), then live-apply.
-    /// Apply a *picker* edit (from the 2D area / hue strip): the open picker's
-    /// HSV is already authoritative, so we must NOT re-derive it (that would
-    /// lose hue/saturation at value→0 / saturation→0).
+    /// Apply a *picker* edit (from the 2D area / hue strip). The open picker's
+    /// HSV is already authoritative, so — unlike [`App::apply_edit`] — we must
+    /// NOT re-derive it from the model (that would lose hue/saturation at
+    /// value→0 / saturation→0).
     fn apply_pick(&mut self, action: EditAction) -> Task<Message> {
-        self.record(action.coalesce_key());
-        let path = action.option_path().map(str::to_string);
-        if let LoadState::Loaded(loaded) = &mut self.load {
-            loaded.apply(action, self.schema);
-        }
-        self.live_apply_task(path)
+        self.commit_edit(action, false)
     }
 
-    /// Apply any other edit: snapshot for undo, mutate the model, keep an open
-    /// color picker's HSV in sync (so the area/strip track hex & slider edits),
-    /// then live-apply.
+    /// Apply any other edit, then keep an open color picker's HSV in sync (so
+    /// the area/strip track explicit hex & slider edits).
     fn apply_edit(&mut self, action: EditAction) -> Task<Message> {
+        self.commit_edit(action, true)
+    }
+
+    /// Shared edit path: snapshot for undo, mutate the model, optionally re-sync
+    /// an open color picker, then live-apply the committed scalar.
+    fn commit_edit(&mut self, action: EditAction, sync_picker: bool) -> Task<Message> {
         self.record(action.coalesce_key());
         let path = action.option_path().map(str::to_string);
         if let LoadState::Loaded(loaded) = &mut self.load {
             loaded.apply(action, self.schema);
         }
-        if let Some(path) = &path {
-            self.sync_color_picker(path);
+        if sync_picker {
+            if let Some(path) = &path {
+                self.sync_color_picker(path);
+            }
         }
         self.live_apply_task(path)
     }
@@ -634,6 +666,22 @@ impl App {
             .and_then(from)
             .or_else(|| self.schema.option(path).map(|o| &o.default).and_then(from))
             .unwrap_or(Color::rgba(255, 255, 255, 255))
+    }
+
+    /// Rebuild (or clear) the cached [`save::SavePreview`] so it matches the
+    /// current model and output format. Cheap when the save panel is closed; the
+    /// (expensive) plan/validation/diff work happens only while it is open, and
+    /// only here in `update` — never in `view`.
+    fn refresh_save_preview(&mut self) {
+        if !self.show_save {
+            self.save_preview = None;
+            return;
+        }
+        let preview = self.load.loaded().map(|loaded| {
+            let target = self.output_format.unwrap_or(loaded.format);
+            save::build_preview(loaded, target, self.schema)
+        });
+        self.save_preview = preview;
     }
 
     /// Validate, write the plan, and reload from disk on success.

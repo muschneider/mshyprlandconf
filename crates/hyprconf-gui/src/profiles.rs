@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Named configuration *profiles*: snapshots of a config the user can save
 //! under a name and re-open later, plus "import from an arbitrary path".
 //!

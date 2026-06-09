@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Safe filesystem writes: atomic replace (temp + fsync + rename) and
 //! timestamped backups.
 //!

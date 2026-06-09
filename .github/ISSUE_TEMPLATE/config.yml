@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/hyprconf/hyprconf/discussions
+    about: Ask questions and discuss usage here rather than opening an issue.
+  - name: Hyprland documentation
+    url: https://wiki.hyprland.org/Configuring/
+    about: For what an option means or its valid values, check the Hyprland wiki.

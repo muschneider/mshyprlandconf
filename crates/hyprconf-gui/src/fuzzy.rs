@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A tiny, dependency-free fuzzy matcher for the search box.
 //!
 //! Matching is a case-insensitive subsequence test with bonuses for matches at

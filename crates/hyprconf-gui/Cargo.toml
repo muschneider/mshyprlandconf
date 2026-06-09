@@ -7,10 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-default-run = "hyprconf-gui"
+default-run = "hyprconf"
 
 [[bin]]
-name = "hyprconf-gui"
+name = "hyprconf"
 path = "src/main.rs"
 
 [dependencies]

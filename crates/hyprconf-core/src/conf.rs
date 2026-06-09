@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The legacy hyprlang `.conf` format: a round-trip-preserving parser,
 //! serializer, and a mapper onto the semantic [`crate::Config`].
 //!

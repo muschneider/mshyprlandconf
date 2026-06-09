@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Persistent application settings under the XDG config dir
 //! (`$XDG_CONFIG_HOME/hyprconf/settings.toml`): theme, last output format,
 //! window size and recent files. UI-free and serde-(de)serializable.

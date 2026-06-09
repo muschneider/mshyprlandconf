@@ -1,0 +1,36 @@
+hyprconf
+Copyright 2026 hyprconf contributors
+
+This product is licensed under the terms of either the MIT license or the
+Apache License, Version 2.0, at your option. See LICENSE-MIT and LICENSE-APACHE.
+
+================================================================================
+Third-party material
+================================================================================
+
+Vendored Hyprland metadata (`meta/`)
+------------------------------------
+`meta/hl.meta.lua` and the derived `meta/hyprland-config-keys.txt` are vendored,
+unmodified, from the Hyprland project (https://github.com/hyprwm/Hyprland),
+which is distributed under the BSD-3-Clause license:
+
+    Copyright (c) 2022-2026, vaxerski and Hyprland contributors
+
+These files are used only as build-time/test-time reference data (the
+authoritative set of configuration option keys) and are not compiled into the
+distributed binary. hyprconf is an independent project and is not affiliated
+with or endorsed by the Hyprland project; the choice of license for hyprconf is
+independent of Hyprland's.
+
+Fonts / glyphs
+--------------
+hyprconf ships no fonts. Section/collection icons are ordinary Unicode/emoji
+code points rendered with whatever system fonts are installed; no glyph assets
+are bundled or redistributed.
+
+Rust dependencies
+-----------------
+hyprconf builds on the Rust crate ecosystem (iced, full_moon, indexmap,
+directories, serde, toml, glob, thiserror, anyhow, tracing, and their
+transitive dependencies). Each is distributed under its own license (typically
+MIT, Apache-2.0, or both); run `cargo tree` / `cargo about` to enumerate them.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The visual color picker: a draggable saturation/value square and a hue
 //! strip, both drawn with `iced`'s `canvas`. They report geometric positions
 //! ([`Message::PickSatVal`] / [`Message::PickHue`]); the app turns those into a

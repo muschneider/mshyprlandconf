@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The data-driven description of Hyprland's configuration surface.
 //!
 //! The [`Schema`] is the single source of truth for *what options exist*, their
@@ -14,6 +15,7 @@
 
 mod data;
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::value::Value;
@@ -291,7 +293,7 @@ pub struct Section {
 }
 
 /// Identifies one of the structured, ordered collections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CollectionId {
     /// `monitor = ...`
     Monitors,
@@ -335,10 +337,16 @@ pub struct CollectionSpec {
 }
 
 /// The complete Hyprland configuration schema.
+///
+/// `index` maps each option's dotted path to its `(section, option)` position
+/// so [`Schema::option`] is an O(1) lookup rather than a linear scan — it is
+/// derived from `sections` and is therefore not part of the public API.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Schema {
     sections: Vec<Section>,
     collections: Vec<CollectionSpec>,
+    /// Path → `(section_index, option_index)` for O(1) [`Schema::option`].
+    index: HashMap<String, (usize, usize)>,
 }
 
 impl Schema {
@@ -350,6 +358,27 @@ impl Schema {
     #[must_use]
     pub fn load() -> Schema {
         data::build()
+    }
+
+    /// Assemble a schema from its parts, building the path lookup index. Used by
+    /// the `data` builder so the index is always in sync with `sections`.
+    pub(super) fn from_parts(sections: Vec<Section>, collections: Vec<CollectionSpec>) -> Schema {
+        let index = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(si, section)| {
+                section
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(move |(oi, opt)| (opt.path.clone(), (si, oi)))
+            })
+            .collect();
+        Schema {
+            sections,
+            collections,
+            index,
+        }
     }
 
     /// A process-wide cached schema, parsed once on first use.
@@ -388,10 +417,11 @@ impl Schema {
         self.sections.iter().flat_map(|s| s.options.iter())
     }
 
-    /// Look up an option by its dotted path.
+    /// Look up an option by its dotted path. O(1) via the prebuilt index.
     #[must_use]
     pub fn option(&self, path: &str) -> Option<&OptionSpec> {
-        self.options().find(|o| o.path == path)
+        let &(si, oi) = self.index.get(path)?;
+        self.sections.get(si)?.options.get(oi)
     }
 
     /// The total number of scalar options across all sections.

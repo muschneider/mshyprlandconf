@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-07
+
+First stable, publishable release: a stranger can install, run, understand and
+contribute. No new app features over 0.10.x — this release is about shipping
+(tests, docs, licensing, packaging, CI/release) and a coherent 1.0 baseline.
+
+### Added — gradient-stop color picking
+
+- The visual color picker now targets **gradient stops** too: every stop of a
+  gradient option (e.g. `general:col.active_border`) gets a clickable swatch and
+  a 🎨 icon that opens the picker; the picker's HEX/RGBA controls and the
+  saturation/value area all edit that stop live (new `EditAction::SetStopColor`,
+  `ColorTarget::{Option,Stop}`).
+
+### Fixed
+
+- The color picker no longer opens on startup (a debug default left the modal
+  open); it now opens only when a swatch/🎨 icon is clicked.
+
+### Tests, docs, licensing, packaging, CI
+
+- **Tests:** serializer **snapshot** tests (exact `conf` + `lua` output) and
+  **headless UI tests** driving the real `App` (`boot → update → view`) through
+  load → edit a scalar → add a keybind → choose format → preview → save →
+  reload, plus undo/redo, multi-panel view smoke, the color picker, and
+  live-apply gating. Core HSV conversion tests. (Totals: core ~73, gui ~46.)
+- **Docs:** a real [README](README.md) (what/why, screenshot, supported Hyprland
+  versions, the Lua-vs-conf behaviour and dynamic-Lua caveat, install + usage),
+  [ARCHITECTURE.md](ARCHITECTURE.md) (core/gui split, the model, schema
+  provenance) and [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Licensing:** dual **MIT OR Apache-2.0** (`LICENSE-MIT`, `LICENSE-APACHE`) —
+  the idiomatic Rust-ecosystem choice for a reusable library + app, maximal
+  downstream compatibility, with Apache-2.0's patent grant; independent of
+  Hyprland's own BSD-3-Clause. `SPDX-License-Identifier` headers on every source
+  file and a `NOTICE` crediting the vendored Hyprland metadata.
+- **Packaging:** Arch `PKGBUILD`, a Nix **flake** (`nix run`/`nix build`/
+  `nix develop`), `cargo install` instructions, an optional Flatpak manifest, a
+  `.desktop` file, and a reproducible `release` profile (`lto = "fat"`,
+  `codegen-units = 1`, `strip`). The GUI binary is now named **`hyprconf`**.
+- **CI/release:** CI runs fmt + clippy (`-D warnings`) + test (incl. headless UI)
+  + a `--locked` build on every push and PR; a tag-triggered **release** workflow
+  builds and attaches a binary tarball + checksum. Issue/PR templates added.
+
+### Notes
+
+- `1.0.0` signals a stable, documented baseline and a commitment to SemVer for
+  `hyprconf-core`'s public API and the on-disk settings/profiles formats. It is
+  not a claim of feature-completeness against every Hyprland option.
+
 ## [0.10.0] - 2026-06-07
 
 ### Added — visual color picker popup
@@ -582,7 +631,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `widget::horizontal_space()` helper was removed; we use
   `widget::Space::new().width(Length::Fill)` instead.
 
-[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/hyprconf/hyprconf/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/hyprconf/hyprconf/compare/v0.10.0...v1.0.0
 [0.10.0]: https://github.com/hyprconf/hyprconf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/hyprconf/hyprconf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/hyprconf/hyprconf/compare/v0.7.0...v0.8.0

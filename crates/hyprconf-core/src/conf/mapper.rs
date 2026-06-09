@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Builds the semantic [`Config`] from a parsed `.conf` document/bundle.
 //!
 //! This is where the lossless document is interpreted: `$variables` are

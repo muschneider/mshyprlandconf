@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The editing engine: applies user edits to the in-memory [`Config`], tracks
 //! per-field drafts, validation errors and dirty state, and supports
 //! reset-to-default. This is deliberately UI-free so it can be unit-tested.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use hyprconf_core::schema::{CollectionId, NumericRange, OptionSpec, Schema, ValueType};
 use hyprconf_core::structured::{
@@ -195,8 +197,9 @@ impl Loaded {
         };
         let default = opt.default.clone();
         self.config.set(path.to_string(), default.clone());
-        // Rebaseline so the field reads as clean after a reset.
-        self.baseline.insert(path.to_string(), default);
+        // Rebaseline so the field reads as clean after a reset. `make_mut`
+        // clones the shared baseline only if an undo snapshot still references it.
+        Arc::make_mut(&mut self.baseline).insert(path.to_string(), default);
         self.dirty.remove(path);
         self.drafts.retain(|id, _| id.path != path);
         self.errors.retain(|id, _| id.path != path);
@@ -632,11 +635,11 @@ impl Loaded {
         self.dirty.len() + self.touched.len()
     }
 
-    /// Collections that have been edited, for the changes view.
+    /// Collections that have been edited, for the changes view (stable order).
     #[must_use]
     pub fn touched_collections(&self) -> Vec<CollectionId> {
         let mut v: Vec<_> = self.touched.iter().copied().collect();
-        v.sort_by_key(|id| format!("{id:?}"));
+        v.sort_unstable();
         v
     }
 
@@ -1087,7 +1090,7 @@ pub fn exec_issue(exec: &Exec) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct EditSnapshot {
     config: Config,
-    baseline: HashMap<String, Value>,
+    baseline: Arc<HashMap<String, Value>>,
     dirty: HashSet<String>,
     touched: HashSet<CollectionId>,
     drafts: HashMap<FieldId, String>,
@@ -1216,10 +1219,11 @@ mod tests {
     fn loaded() -> (Loaded, &'static Schema) {
         let schema = Schema::shared();
         let config = Config::default_from_schema(schema);
-        let baseline = schema
+        let baseline: HashMap<String, Value> = schema
             .options()
             .map(|o| (o.path.clone(), config.get(&o.path).cloned().unwrap()))
             .collect();
+        let baseline = Arc::new(baseline);
         let loaded = Loaded {
             format: ConfigFormat::Conf,
             source: PathBuf::from("test"),
@@ -1330,7 +1334,7 @@ mod tests {
             included_files: 0,
             warnings: 0,
             config: Config::empty(),
-            baseline: HashMap::new(),
+            baseline: Arc::new(HashMap::new()),
             dirty: HashSet::new(),
             drafts: HashMap::new(),
             errors: HashMap::new(),

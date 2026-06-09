@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A small LCS-based line diff for the before/after save preview.
 //!
 //! Config files are short, so the `O(n·m)` table is fine and keeps the crate

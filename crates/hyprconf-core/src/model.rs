@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The in-memory, format-agnostic configuration model.
 //!
 //! [`Config`] is the central abstraction of hyprconf: it holds a config's

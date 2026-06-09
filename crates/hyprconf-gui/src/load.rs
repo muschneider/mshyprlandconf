@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Locating and loading the user's Hyprland configuration.
 //!
 //! Detection order (when no explicit path is given): `hyprland.lua` then
@@ -7,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hyprconf_core::lua::LuaWarning;
 use hyprconf_core::{conf, lua, ConfBundle, Config, ConfigFormat, Schema, Value};
@@ -70,8 +72,9 @@ pub struct Loaded {
     /// The current (possibly edited) configuration.
     pub config: Config,
     /// The effective value of each schema option at load time, used to decide
-    /// whether a field has unsaved changes.
-    pub baseline: HashMap<String, Value>,
+    /// whether a field has unsaved changes. Shared (`Arc`) so undo snapshots can
+    /// reference it cheaply instead of deep-copying it on every edit.
+    pub baseline: Arc<HashMap<String, Value>>,
     /// Paths whose current value differs from [`Loaded::baseline`].
     pub dirty: HashSet<String>,
     /// In-progress raw text for text-based editors, keyed by field.
@@ -100,7 +103,7 @@ impl Loaded {
         origin: Origin,
         schema: &Schema,
     ) -> Self {
-        let baseline = schema
+        let baseline: HashMap<String, Value> = schema
             .options()
             .map(|opt| {
                 let value = config
@@ -117,7 +120,7 @@ impl Loaded {
             included_files,
             warnings,
             config,
-            baseline,
+            baseline: Arc::new(baseline),
             dirty: HashSet::new(),
             drafts: HashMap::new(),
             errors: HashMap::new(),

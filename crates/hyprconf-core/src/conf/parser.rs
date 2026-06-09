@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Parsing of `.conf` text into a lossless [`ConfDocument`], plus multi-file
 //! include resolution (`source = ...`) with cycle and missing-file detection.
 

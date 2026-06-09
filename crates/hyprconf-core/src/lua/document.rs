@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A lossless model of a single `.lua` file.
 //!
 //! `full_moon` is itself a lossless (concrete) parser: its `Ast` preserves every

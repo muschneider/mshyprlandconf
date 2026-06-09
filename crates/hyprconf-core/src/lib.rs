@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `hyprconf-core` is the UI-free heart of hyprconf.
 //!
 //! It holds the format-agnostic configuration model and the data-driven

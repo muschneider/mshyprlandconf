@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A lossless, line-oriented model of a single `.conf` file.
 //!
 //! Round-trip fidelity is the whole point of this type: every physical line is
